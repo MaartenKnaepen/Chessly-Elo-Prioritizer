@@ -1,19 +1,23 @@
 {
   "manifest_version": 3,
   "name": "Chessly ELO Prioritizer",
-  "version": "2.0",
+  "version": "2.1",
   "description": "Compare variation win rates across specific ELO ranges.",
-  "permissions": ["scripting", "storage"],
+  "permissions": ["storage"],
   "host_permissions": [
     "https://*.chessly.com/*",
     "https://explorer.lichess.ovh/*"
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Chessly ELO Settings"
+    "default_title": "Chessly ELO Settings",
+    "default_icon": {
+
+      "128": "cep.jpg"
+    }
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "cep.jpg"
   },
   "content_scripts": [
     {
