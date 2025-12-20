@@ -46,3 +46,37 @@
 ## 📝 Project Memory
 *(Rovo will append completed tasks below with a timestamp)*
 ---------------------------------------------------------
+
+### 2025-12-20 14:37 UTC - Initial Extension Architecture Implemented
+**Task:** Implemented high-performance Chrome Extension architecture per `.rovo-plan.md`
+
+**Completed:**
+- ✅ Created Vite + React + TypeScript build configuration
+- ✅ Configured `@crxjs/vite-plugin` for Manifest V3 bundling
+- ✅ Implemented Offscreen Document (`src/offscreen/`) for DOM-based crawling
+  - `index.html`: Minimal HTML shell
+  - `crawler.ts`: Polite & Persistent crawl logic (serial iframe recycling, 1.5s cooldown)
+- ✅ Implemented Background Service Worker (`src/background/index.ts`)
+  - Offscreen document lifecycle management
+  - FEN generation pipeline using `chess.js`
+  - Lichess API integration with 1 req/sec throttling
+  - Persistent state management via `chrome.storage.local`
+- ✅ Implemented Popup UI (`src/popup/`)
+  - `App.tsx`: Clean React UI with status tracking
+  - Real-time progress updates (crawling → enriching → complete)
+  - Export to JSON functionality
+  - Responsive design with status indicators
+- ✅ Defined shared TypeScript interfaces (`src/types.ts`)
+- ✅ Successfully built extension (`npm run build` → `dist/`)
+
+**Architecture Highlights:**
+- **No global state in Service Worker** (ephemeral-safe)
+- **Message passing** for background ↔ offscreen ↔ popup communication
+- **Throttled API calls** to respect Lichess rate limits
+- **Sequential iframe crawling** to avoid overwhelming Chessly servers
+
+**Next Steps:**
+- Test extension in Chrome (`chrome://extensions` → Load `dist/` folder)
+- Implement Phase 1 URL collection (requires content script or tab access)
+- Add error recovery and retry logic
+- Optimize Lichess API batching for even faster enrichment

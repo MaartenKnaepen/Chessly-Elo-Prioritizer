@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Chessly Repertoire Extractor",
+  "version": "1.0.0",
+  "description": "Fast extraction of chess repertoires from Chessly with Lichess statistics",
+  "permissions": [
+    "storage",
+    "offscreen",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://chessly.com/*",
+    "https://explorer.lichess.ovh/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.ts",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "Chessly Extractor"
+  },
+  "icons": {
+    "16": "cep.jpg",
+    "48": "cep.jpg",
+    "128": "cep.jpg"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["src/offscreen/index.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
