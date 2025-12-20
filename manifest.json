@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Chessly ELO Prioritizer",
-  "version": "2.1",
-  "description": "Compare variation win rates across specific ELO ranges.",
+  "name": "Chessly Course Scanner",
+  "version": "3.0",
+  "description": "Scan and analyze Chessly course studies with Lichess statistics.",
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.chessly.com/*",
@@ -17,12 +17,12 @@
     }
   },
   "background": {
-    "service_worker": "cep.jpg"
+    "service_worker": "TBD"
   },
   "content_scripts": [
     {
       "matches": ["https://*.chessly.com/*"],
-      "js": ["chess.js", "logic.js", "renderer.js", "content.js"]
+      "js": ["TBD"]
     }
   ]
 }
