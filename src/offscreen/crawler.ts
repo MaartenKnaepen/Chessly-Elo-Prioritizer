@@ -4,7 +4,7 @@
  * Runs in a hidden offscreen document to avoid blocking the UI
  */
 
-import type { CrawlTask, RawExtractedLine, Message, CrawlProgressPayload, CrawlCompletePayload } from '../types';
+import type { CrawlTask, RawExtractedLine, Message, CrawlProgressPayload, CrawlCompletePayload, StartCrawlPayload } from '../types';
 
 // Configuration
 const TIMEOUT_MS = 10000; // Give up on a study after 10s
@@ -16,7 +16,20 @@ console.log('🔧 Offscreen crawler initialized');
 chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
   if (message.type === 'START_CRAWL') {
     console.log('🚀 Received START_CRAWL message');
-    startCrawl().catch(error => {
+    
+    const payload = message.payload as StartCrawlPayload;
+    
+    if (!payload || !payload.tasks || payload.tasks.length === 0) {
+      console.error('❌ No tasks provided in START_CRAWL message');
+      chrome.runtime.sendMessage({
+        type: 'CRAWL_ERROR',
+        payload: { error: 'No tasks provided' }
+      });
+      sendResponse({ status: 'error', error: 'No tasks provided' });
+      return true;
+    }
+    
+    startCrawl(payload.tasks).catch(error => {
       console.error('❌ Crawl failed:', error);
       chrome.runtime.sendMessage({
         type: 'CRAWL_ERROR',
@@ -30,26 +43,13 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
 
 /**
  * Main crawl orchestrator
+ * Now receives tasks directly from the background (via content script scan)
  */
-async function startCrawl(): Promise<void> {
-  console.log('🚀 Starting Polite Extraction (Serial Mode)...');
+async function startCrawl(tasks: CrawlTask[]): Promise<void> {
+  console.log(`🚀 Starting Polite Extraction (Serial Mode) with ${tasks.length} tasks...`);
 
-  // PHASE 1: Collect URLs from the main Chessly page
-  const masterQueue = await collectStudyUrls();
-  
-  if (masterQueue.length === 0) {
-    console.error('❌ No studies found.');
-    chrome.runtime.sendMessage({
-      type: 'CRAWL_ERROR',
-      payload: { error: 'No studies found on the page' }
-    });
-    return;
-  }
-
-  console.log(`✅ PHASE 1 COMPLETE. Collected ${masterQueue.length} studies.`);
-
-  // PHASE 2: Serial Extraction
-  const results = await extractAllStudies(masterQueue);
+  // PHASE 2: Serial Extraction (Phase 1 is now done by content script)
+  const results = await extractAllStudies(tasks);
 
   // Send results back to background
   console.log('🎉 EXTRACTION SUCCESSFUL!');
@@ -60,23 +60,6 @@ async function startCrawl(): Promise<void> {
       count: results.length
     } as CrawlCompletePayload
   });
-}
-
-/**
- * PHASE 1: Collect all study URLs from the Chessly repertoire page
- * This needs to be done in a content script or by fetching the page
- * For now, we'll implement a placeholder that expects the background to provide URLs
- */
-async function collectStudyUrls(): Promise<CrawlTask[]> {
-  // In a real implementation, we would:
-  // 1. Fetch the Chessly repertoire page
-  // 2. Parse the DOM to find all chapter/study links
-  // 3. Return them as CrawlTask[]
-  
-  // For now, return an empty array - the background script will need to
-  // inject a content script to collect these URLs first
-  console.warn('⚠️ URL collection not implemented in offscreen yet');
-  return [];
 }
 
 /**

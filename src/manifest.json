@@ -20,6 +20,13 @@
     "default_popup": "src/popup/index.html",
     "default_title": "Chessly Extractor"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://chessly.com/*"],
+      "js": ["src/content/index.ts"],
+      "run_at": "document_idle"
+    }
+  ],
   "icons": {
     "16": "cep.jpg",
     "48": "cep.jpg",

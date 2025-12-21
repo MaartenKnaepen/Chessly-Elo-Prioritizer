@@ -17,7 +17,9 @@ import type {
   Message,
   StatusResponse,
   CrawlCompletePayload,
-  EnrichProgressPayload
+  EnrichProgressPayload,
+  ScanCompletePayload,
+  StartCrawlPayload
 } from '../types';
 
 console.log('🔧 Background service worker initialized');
@@ -55,6 +57,15 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
         sendResponse({ error: error.message });
       });
       return true; // Keep channel open for async response
+
+    case 'SCAN_COMPLETE':
+      handleScanComplete(message.payload as ScanCompletePayload)
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error handling scan complete:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
 
     case 'CRAWL_COMPLETE':
       handleCrawlComplete(message.payload as CrawlCompletePayload)
@@ -109,18 +120,80 @@ async function updateState(updates: Partial<StatusResponse>): Promise<void> {
 
 /**
  * Start the crawl process
+ * New flow: Query active tab -> Send SCAN_PAGE to content script
  */
 async function handleStartCrawl(): Promise<{ status: string }> {
   console.log('🚀 Starting crawl...');
 
-  // Update state
+  // Update state to scanning
   await updateState({ state: 'crawling', lineCount: 0 });
+
+  try {
+    // Step 1: Get the active tab
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    if (!activeTab || !activeTab.id) {
+      throw new Error('No active tab found');
+    }
+
+    if (!activeTab.url?.includes('chessly.com')) {
+      throw new Error('Please navigate to a Chessly repertoire page first');
+    }
+
+    console.log('📍 Active tab:', activeTab.url);
+
+    // Step 2: Send SCAN_PAGE message to content script
+    console.log('📨 Sending SCAN_PAGE to content script...');
+    const response = await chrome.tabs.sendMessage(activeTab.id, { type: 'SCAN_PAGE' });
+
+    if (!response.success) {
+      throw new Error(response.error || 'Scan failed');
+    }
+
+    console.log('✅ Scan initiated successfully');
+    return { status: 'scan_started' };
+
+  } catch (error) {
+    console.error('❌ Failed to start crawl:', error);
+    await updateState({ 
+      state: 'error', 
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+    throw error;
+  }
+}
+
+/**
+ * Handle scan completion from content script
+ * Start the offscreen crawler with the collected tasks
+ */
+async function handleScanComplete(payload: ScanCompletePayload): Promise<{ status: string }> {
+  console.log(`✅ Scan complete! Received ${payload.count} tasks`);
+
+  if (payload.count === 0) {
+    await updateState({ state: 'error', error: 'No studies found on the page' });
+    return { status: 'error' };
+  }
+
+  // Update state
+  await updateState({ 
+    state: 'crawling', 
+    lineCount: 0,
+    progress: { current: 0, total: payload.count }
+  });
 
   // Ensure offscreen document exists
   await setupOffscreenDocument();
 
-  // Send message to offscreen to start crawling
-  chrome.runtime.sendMessage({ type: 'START_CRAWL' });
+  // Send START_CRAWL to offscreen with the tasks
+  const crawlPayload: StartCrawlPayload = {
+    tasks: payload.tasks
+  };
+
+  chrome.runtime.sendMessage({ 
+    type: 'START_CRAWL',
+    payload: crawlPayload
+  });
 
   return { status: 'crawl_started' };
 }

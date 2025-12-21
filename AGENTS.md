@@ -80,3 +80,54 @@
 - Implement Phase 1 URL collection (requires content script or tab access)
 - Add error recovery and retry logic
 - Optimize Lichess API batching for even faster enrichment
+
+### 2025-12-20 15:00 UTC - Content Script Bridge Implementation Complete
+**Task:** Implemented the Content Script to bridge the gap between the UI and the crawler pipeline per `.rovo-plan.md`
+
+**Completed:**
+- ✅ Updated `src/types.ts` with new message types
+  - Added `SCAN_PAGE` and `SCAN_COMPLETE` message types
+  - Added `ScanCompletePayload` and `StartCrawlPayload` interfaces
+- ✅ Created Content Script (`src/content/index.ts`)
+  - Smart chapter expansion logic (detects collapsed chapters and expands them)
+  - Polls for content appearance after expansion (800ms delay, max 10 attempts)
+  - Extracts study URLs from each chapter
+  - Sends `SCAN_COMPLETE` message to background with collected tasks
+  - Visual indicator shows when content script is active
+- ✅ Registered content script in `src/manifest.json`
+  - Matches: `https://chessly.com/*`
+  - Run at: `document_idle` for optimal performance
+- ✅ Updated Background Orchestrator (`src/background/index.ts`)
+  - New flow: Popup → Background → Content Script (scan) → Background → Offscreen (crawl)
+  - `handleStartCrawl` now queries active tab and sends `SCAN_PAGE`
+  - Added `handleScanComplete` to receive tasks and forward to offscreen
+  - Validates user is on Chessly page before starting
+- ✅ Updated Offscreen Crawler (`src/offscreen/crawler.ts`)
+  - Now accepts tasks via `StartCrawlPayload` in the `START_CRAWL` message
+  - Removed placeholder `collectStudyUrls` function (now done by content script)
+  - Direct flow: receives tasks → extracts data → returns results
+- ✅ Successfully built and tested pipeline (`npm run build`)
+
+**Architecture Flow:**
+1. User clicks "Start Extraction" in Popup
+2. Background queries active tab and sends `SCAN_PAGE` to Content Script
+3. Content Script scans page, expands chapters, extracts study URLs
+4. Content Script sends `SCAN_COMPLETE` with tasks array to Background
+5. Background creates Offscreen Document and sends `START_CRAWL` with tasks
+6. Offscreen Document crawls each study URL sequentially
+7. Offscreen sends `CRAWL_COMPLETE` with raw data to Background
+8. Background enriches data with FEN + Lichess stats
+9. Background stores enriched data and updates Popup status
+
+**Performance Optimizations:**
+- Content script waits for DOM to be idle before injecting
+- Chapter expansion uses polling with timeout protection
+- Single reusable iframe in offscreen for memory efficiency
+- 1.5s cooldown between study crawls to be polite to Chessly servers
+- 1 req/sec throttling for Lichess API calls
+
+**Next Steps:**
+- Load extension in Chrome and test on real Chessly repertoire page
+- Add error recovery for network failures
+- Implement retry logic for failed studies
+- Consider adding progress indicators during content script scan phase

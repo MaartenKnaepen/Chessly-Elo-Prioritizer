@@ -36,6 +36,8 @@ export interface RawExtractedLine {
 // Message Types for chrome.runtime communication
 export type MessageType = 
   | 'START_CRAWL'
+  | 'SCAN_PAGE'
+  | 'SCAN_COMPLETE'
   | 'CRAWL_PROGRESS'
   | 'CRAWL_COMPLETE'
   | 'CRAWL_ERROR'
@@ -47,6 +49,15 @@ export type MessageType =
 export interface Message {
   type: MessageType;
   payload?: any;
+}
+
+export interface ScanCompletePayload {
+  tasks: CrawlTask[];
+  count: number;
+}
+
+export interface StartCrawlPayload {
+  tasks: CrawlTask[];
 }
 
 export interface CrawlProgressPayload {

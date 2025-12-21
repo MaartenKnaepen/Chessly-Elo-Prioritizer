@@ -1,0 +1,252 @@
+/**
+ * Content Script - Runs on Chessly pages
+ * Handles "Phase 1" - DOM scraping and chapter expansion
+ * Collects study URLs and sends them to the background script
+ */
+
+import type { CrawlTask, Message, ScanCompletePayload } from '../types';
+
+console.log('🔧 Content script initialized on Chessly page');
+
+// Configuration
+const EXPANSION_DELAY_MS = 800; // Wait for chapters to expand
+const MAX_WAIT_ATTEMPTS = 10;   // Max polls waiting for content to appear
+
+/**
+ * Listen for SCAN_PAGE message from background
+ */
+chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
+  if (message.type === 'SCAN_PAGE') {
+    console.log('🔍 Received SCAN_PAGE command');
+    
+    scanPage()
+      .then(tasks => {
+        console.log(`✅ Scan complete! Found ${tasks.length} studies`);
+        
+        const payload: ScanCompletePayload = {
+          tasks,
+          count: tasks.length
+        };
+        
+        // Send SCAN_COMPLETE message to background
+        chrome.runtime.sendMessage({
+          type: 'SCAN_COMPLETE',
+          payload
+        });
+        
+        sendResponse({ success: true, payload });
+      })
+      .catch(error => {
+        console.error('❌ Scan failed:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    
+    return true; // Keep channel open for async response
+  }
+});
+
+/**
+ * Main page scanning logic
+ * Expands all chapters and collects study URLs
+ */
+async function scanPage(): Promise<CrawlTask[]> {
+  console.log('🚀 Starting page scan...');
+  
+  const tasks: CrawlTask[] = [];
+  
+  // Find all chapter divs
+  const chapterDivs = document.querySelectorAll<HTMLDivElement>('div[id^="chapter-"]');
+  
+  if (chapterDivs.length === 0) {
+    throw new Error('No chapters found on this page. Are you on the Chessly repertoire overview?');
+  }
+  
+  console.log(`📚 Found ${chapterDivs.length} chapters`);
+  
+  // Process each chapter
+  for (let i = 0; i < chapterDivs.length; i++) {
+    const chapterDiv = chapterDivs[i];
+    console.log(`📖 Processing chapter ${i + 1}/${chapterDivs.length}`);
+    
+    try {
+      const chapterTasks = await processChapter(chapterDiv);
+      tasks.push(...chapterTasks);
+    } catch (error) {
+      console.warn(`⚠️ Failed to process chapter ${i + 1}:`, error);
+      // Continue with next chapter
+    }
+  }
+  
+  return tasks;
+}
+
+/**
+ * Process a single chapter - expand if needed and extract studies
+ */
+async function processChapter(chapterDiv: HTMLDivElement): Promise<CrawlTask[]> {
+  // Get chapter name from the header
+  const chapterHeader = chapterDiv.querySelector('.chapter-header, [class*="chapter"], h2, h3');
+  const chapterName = chapterHeader?.textContent?.trim() || 'Unknown Chapter';
+  
+  console.log(`  📂 Chapter: ${chapterName}`);
+  
+  // Check if chapter is collapsed
+  const isCollapsed = await isChapterCollapsed(chapterDiv);
+  
+  if (isCollapsed) {
+    console.log(`  🔓 Expanding chapter...`);
+    await expandChapter(chapterDiv);
+  }
+  
+  // Extract study links
+  const studies = extractStudiesFromChapter(chapterDiv, chapterName);
+  console.log(`  ✅ Found ${studies.length} studies`);
+  
+  return studies;
+}
+
+/**
+ * Check if a chapter is collapsed
+ */
+async function isChapterCollapsed(chapterDiv: HTMLDivElement): Promise<boolean> {
+  // Look for common collapse indicators
+  const header = chapterDiv.querySelector('.chapter-header, [class*="chapter-header"], [class*="accordion"]');
+  
+  if (!header) {
+    // No header found, assume it's already expanded
+    return false;
+  }
+  
+  // Check for aria-expanded attribute
+  const ariaExpanded = header.getAttribute('aria-expanded');
+  if (ariaExpanded === 'false') {
+    return true;
+  }
+  
+  // Check for collapsed class
+  if (header.classList.contains('collapsed') || chapterDiv.classList.contains('collapsed')) {
+    return true;
+  }
+  
+  // Check if there are any visible study links
+  const studyLinks = chapterDiv.querySelectorAll('a[href*="study"]');
+  if (studyLinks.length === 0) {
+    return true;
+  }
+  
+  return false;
+}
+
+/**
+ * Expand a collapsed chapter
+ */
+async function expandChapter(chapterDiv: HTMLDivElement): Promise<void> {
+  // Find the clickable header
+  const clickable = chapterDiv.querySelector<HTMLElement>(
+    '.chapter-header, [class*="chapter-header"], [class*="accordion"], button, h2, h3'
+  );
+  
+  if (!clickable) {
+    console.warn('  ⚠️ No clickable header found, assuming already expanded');
+    return;
+  }
+  
+  // Click to expand
+  clickable.click();
+  
+  // Wait for content to appear
+  await waitForChapterContent(chapterDiv);
+}
+
+/**
+ * Wait for chapter content to become visible after expansion
+ */
+async function waitForChapterContent(chapterDiv: HTMLDivElement): Promise<void> {
+  let attempts = 0;
+  
+  while (attempts < MAX_WAIT_ATTEMPTS) {
+    // Check if study links are now visible
+    const studyLinks = chapterDiv.querySelectorAll('a[href*="study"]');
+    
+    if (studyLinks.length > 0) {
+      // Content appeared!
+      return;
+    }
+    
+    // Wait a bit and try again
+    await sleep(EXPANSION_DELAY_MS);
+    attempts++;
+  }
+  
+  console.warn('  ⚠️ Chapter content did not appear after expansion');
+}
+
+/**
+ * Extract all study links from a chapter
+ */
+function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: string): CrawlTask[] {
+  const tasks: CrawlTask[] = [];
+  
+  // Find all study links (assuming they contain "study" in the URL)
+  const studyLinks = chapterDiv.querySelectorAll<HTMLAnchorElement>('a[href*="study"]');
+  
+  studyLinks.forEach(link => {
+    const url = link.href;
+    
+    // Extract study name from link text or nearby element
+    let studyName = link.textContent?.trim() || 'Unknown Study';
+    
+    // If the link text is empty, try to find a nearby label
+    if (!studyName || studyName.length === 0) {
+      const parent = link.parentElement;
+      studyName = parent?.textContent?.trim() || 'Unknown Study';
+    }
+    
+    // Clean up the study name (remove extra whitespace)
+    studyName = studyName.replace(/\s+/g, ' ').trim();
+    
+    tasks.push({
+      chapter: chapterName,
+      study: studyName,
+      url
+    });
+  });
+  
+  return tasks;
+}
+
+/**
+ * Sleep utility
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Visual feedback: Add a subtle indicator that the content script is active
+const indicator = document.createElement('div');
+indicator.id = 'chessly-extractor-indicator';
+Object.assign(indicator.style, {
+  position: 'fixed',
+  top: '10px',
+  right: '10px',
+  background: '#4CAF50',
+  color: 'white',
+  padding: '8px 12px',
+  borderRadius: '4px',
+  fontSize: '12px',
+  fontWeight: 'bold',
+  zIndex: '999999',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
+  display: 'none'
+});
+indicator.textContent = '♟️ Chessly Extractor Ready';
+document.body.appendChild(indicator);
+
+// Show indicator briefly on load
+indicator.style.display = 'block';
+setTimeout(() => {
+  indicator.style.display = 'none';
+}, 3000);
+
+// Export for testing (if needed)
+export { scanPage, processChapter };
