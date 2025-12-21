@@ -109,41 +109,26 @@ async function processChapter(chapterDiv: HTMLDivElement): Promise<CrawlTask[]> 
  * Check if a chapter is collapsed
  */
 async function isChapterCollapsed(chapterDiv: HTMLDivElement): Promise<boolean> {
-  // Look for common collapse indicators
-  const header = chapterDiv.querySelector('.chapter-header, [class*="chapter-header"], [class*="accordion"]');
+  // Check if the chapter div has the "open" class (React-generated class pattern)
+  // If className includes "Chapter_open" or "open", it's expanded
+  const className = chapterDiv.className || '';
   
-  if (!header) {
-    // No header found, assume it's already expanded
+  if (className.includes('Chapter_open') || className.includes('open')) {
+    // Chapter is already open/expanded
     return false;
   }
   
-  // Check for aria-expanded attribute
-  const ariaExpanded = header.getAttribute('aria-expanded');
-  if (ariaExpanded === 'false') {
-    return true;
-  }
-  
-  // Check for collapsed class
-  if (header.classList.contains('collapsed') || chapterDiv.classList.contains('collapsed')) {
-    return true;
-  }
-  
-  // Check if there are any visible study links
-  const studyLinks = chapterDiv.querySelectorAll('a[href*="study"]');
-  if (studyLinks.length === 0) {
-    return true;
-  }
-  
-  return false;
+  // If the class doesn't include "open", it's collapsed and needs expansion
+  return true;
 }
 
 /**
  * Expand a collapsed chapter
  */
 async function expandChapter(chapterDiv: HTMLDivElement): Promise<void> {
-  // Find the clickable header
+  // Find the clickable header - prioritize React-generated class pattern
   const clickable = chapterDiv.querySelector<HTMLElement>(
-    '.chapter-header, [class*="chapter-header"], [class*="accordion"], button, h2, h3'
+    'div[class*="Chapter_chapterHeader"], .chapter-header, [class*="chapter-header"], [class*="accordion"], button, h2, h3'
   );
   
   if (!clickable) {
@@ -187,11 +172,17 @@ async function waitForChapterContent(chapterDiv: HTMLDivElement): Promise<void> 
 function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: string): CrawlTask[] {
   const tasks: CrawlTask[] = [];
   
-  // Find all study links (assuming they contain "study" in the URL)
-  const studyLinks = chapterDiv.querySelectorAll<HTMLAnchorElement>('a[href*="study"]');
+  // Find all study links (assuming they contain "/studies/" in the URL)
+  const studyLinks = chapterDiv.querySelectorAll<HTMLAnchorElement>('a[href*="/studies/"]');
   
   studyLinks.forEach(link => {
     const url = link.href;
+    
+    // Filter: Exclude non-study links (video, quizzes, drill-shuffle)
+    if (url.endsWith('/video') || url.endsWith('/quizzes') || url.endsWith('/drill-shuffle')) {
+      // Skip these links - they're not the "Learn" study link we want
+      return;
+    }
     
     // Extract study name from link text or nearby element
     let studyName = link.textContent?.trim() || 'Unknown Study';

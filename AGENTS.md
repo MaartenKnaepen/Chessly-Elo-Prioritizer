@@ -131,3 +131,46 @@
 - Add error recovery for network failures
 - Implement retry logic for failed studies
 - Consider adding progress indicators during content script scan phase
+
+### 2025-12-21 11:43 UTC - Content Script Selector & Filter Fixes
+**Task:** Fixed Content Script to correctly detect React-generated class names and filter study URLs per `.rovo-plan.md`
+
+**Problem:**
+- Content script failed to detect collapsed chapters due to incorrect class selectors
+- React generates dynamic class names like `Chapter_chapterHeader__...` and `Chapter_open`
+- Content script was extracting all study-related links (video, quiz, drill) instead of just the "Learn" link
+
+**Completed:**
+- ✅ Refactored `isChapterCollapsed()` function
+  - Now checks if `chapterDiv.className` includes `"Chapter_open"` or `"open"`
+  - Returns `false` (expanded) if class contains "open", `true` (collapsed) otherwise
+  - Simplified logic removes unreliable heuristics
+- ✅ Refactored `expandChapter()` function
+  - Updated click selector to prioritize `div[class*="Chapter_chapterHeader"]`
+  - Matches React-generated class names correctly
+  - Kept fallback selectors for robustness
+- ✅ Refactored `extractStudiesFromChapter()` function
+  - Changed selector from `a[href*="study"]` to `a[href*="/studies/"]` (more specific)
+  - Added filtering logic to exclude non-study links:
+    - Skip URLs ending in `/video`
+    - Skip URLs ending in `/quizzes`
+    - Skip URLs ending in `/drill-shuffle`
+  - Only extracts the clean "Learn" study links
+- ✅ Successfully built extension (`npm run build`)
+
+**Technical Details:**
+- Detection now relies on React's class naming pattern instead of DOM structure assumptions
+- Filter uses `.endsWith()` check for precise exclusion
+- Maintains backward compatibility with fallback selectors
+
+**Expected Behavior After Fix:**
+1. Script should log `🔓 Expanding chapter...` when chapters are collapsed
+2. Script should wait for content to appear after expansion
+3. Script should log `✅ Found X studies` with accurate count (excluding video/quiz/drill)
+4. Popup should display correct progress count matching real study count
+
+**Next Steps:**
+- Reload extension in Chrome (`chrome://extensions` → Developer mode → Update)
+- Refresh the Chessly repertoire page
+- Run "Start Extraction" and verify console logs show correct detection and filtering
+- Verify extracted data only contains study links, not video/quiz/drill links
