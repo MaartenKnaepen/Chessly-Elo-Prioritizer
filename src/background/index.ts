@@ -711,7 +711,19 @@ async function processTaskQueue(): Promise<void> {
   console.log(`🔄 Starting Worker Tab processor with ${taskQueue.length} tasks...`);
 
   try {
-    // Step 1: Create Worker Tab if needed
+    // Step 1: Verify existing Worker Tab or create new one
+    if (workerTabId) {
+      try {
+        // Verify the tab still exists
+        await chrome.tabs.get(workerTabId);
+        console.log(`✅ Using existing Worker Tab: ${workerTabId}`);
+      } catch (error) {
+        // Tab doesn't exist anymore (user closed it or extension restarted)
+        console.log('⚠️ Worker Tab no longer exists, creating new one...');
+        workerTabId = null;
+      }
+    }
+    
     if (!workerTabId) {
       console.log('📄 Creating Worker Tab...');
       const tab = await chrome.tabs.create({
@@ -754,18 +766,7 @@ async function processTaskQueue(): Promise<void> {
       }
     }
 
-    // Step 3: Cleanup - close worker tab
-    if (workerTabId) {
-      console.log('🧹 Closing Worker Tab...');
-      
-      // Disable resource blocking
-      await disableWorkerTabBlocking();
-      
-      await chrome.tabs.remove(workerTabId);
-      workerTabId = null;
-    }
-
-    // Step 4: Send completion signal
+    // Step 3: Send completion signal
     console.log('🎉 Task queue processing complete!');
     await handleCrawlComplete({ lines: [], count: 0 });
 
@@ -773,8 +774,28 @@ async function processTaskQueue(): Promise<void> {
     console.error('❌ Task queue processing failed:', error);
     await updateState({ state: 'error', error: error instanceof Error ? error.message : 'Unknown error' });
   } finally {
+    // Step 4: Cleanup - ALWAYS runs even if there's an error
     isProcessingTasks = false;
     taskQueue = [];
+    
+    // Close worker tab if it exists
+    if (workerTabId) {
+      console.log('🧹 Closing Worker Tab...');
+      
+      try {
+        // Disable resource blocking
+        await disableWorkerTabBlocking();
+        
+        // Try to close the tab (might fail if user already closed it)
+        await chrome.tabs.remove(workerTabId);
+        console.log('✅ Worker Tab closed successfully');
+      } catch (error) {
+        console.log('⚠️ Worker Tab already closed or inaccessible');
+      } finally {
+        // ALWAYS reset workerTabId, even if removal fails
+        workerTabId = null;
+      }
+    }
   }
 }
 

@@ -109,6 +109,13 @@ function extractCourseName(): string {
  * Process a single chapter - expand if needed and extract studies
  */
 async function processChapter(chapterDiv: HTMLDivElement, courseName: string): Promise<CrawlTask[]> {
+  // Capture the chapter ID for DOM re-querying after React re-renders
+  const chapterId = chapterDiv.id;
+  if (!chapterId) {
+    console.warn('⚠️ Chapter div has no ID, skipping...');
+    return [];
+  }
+  
   // Get clean chapter name - target the specific title element to exclude progress text
   let chapterName = 'Unknown Chapter';
   
@@ -154,11 +161,11 @@ async function processChapter(chapterDiv: HTMLDivElement, courseName: string): P
   
   if (isCollapsed) {
     console.log(`  🔓 Expanding chapter...`);
-    await expandChapter(chapterDiv);
+    await expandChapter(chapterId);
   }
   
-  // Extract study links
-  const studies = extractStudiesFromChapter(chapterDiv, chapterName, courseName);
+  // Extract study links (pass ID instead of element)
+  const studies = extractStudiesFromChapter(chapterId, chapterName, courseName);
   console.log(`  ✅ Found ${studies.length} studies`);
   
   return studies;
@@ -184,7 +191,15 @@ async function isChapterCollapsed(chapterDiv: HTMLDivElement): Promise<boolean> 
 /**
  * Expand a collapsed chapter
  */
-async function expandChapter(chapterDiv: HTMLDivElement): Promise<void> {
+async function expandChapter(chapterId: string): Promise<void> {
+  // Re-query the element by ID to get fresh DOM reference
+  const chapterDiv = document.getElementById(chapterId);
+  
+  if (!chapterDiv) {
+    console.warn('  ⚠️ Chapter element not found, may have been removed');
+    return;
+  }
+  
   // Find the clickable header - prioritize React-generated class pattern
   const clickable = chapterDiv.querySelector<HTMLElement>(
     'div[class*="Chapter_chapterHeader"], .chapter-header, [class*="chapter-header"], [class*="accordion"], button, h2, h3'
@@ -198,19 +213,27 @@ async function expandChapter(chapterDiv: HTMLDivElement): Promise<void> {
   // Click to expand
   clickable.click();
   
-  // Wait for content to appear
-  await waitForChapterContent(chapterDiv);
+  // Wait for content to appear (pass ID, not element)
+  await waitForChapterContent(chapterId);
 }
 
 /**
  * Wait for chapter content to become visible after expansion
  */
-async function waitForChapterContent(chapterDiv: HTMLDivElement): Promise<void> {
+async function waitForChapterContent(chapterId: string): Promise<void> {
   let attempts = 0;
   
   while (attempts < MAX_WAIT_ATTEMPTS) {
+    // Re-query the element by ID to get fresh DOM reference after React re-render
+    const freshDiv = document.getElementById(chapterId);
+    
+    if (!freshDiv) {
+      console.warn('  ⚠️ Chapter element disappeared during wait');
+      return;
+    }
+    
     // Check if study links are now visible
-    const studyLinks = chapterDiv.querySelectorAll('a[href*="study"]');
+    const studyLinks = freshDiv.querySelectorAll('a[href*="study"]');
     
     if (studyLinks.length > 0) {
       // Content appeared!
@@ -228,8 +251,16 @@ async function waitForChapterContent(chapterDiv: HTMLDivElement): Promise<void> 
 /**
  * Extract all study links from a chapter
  */
-function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: string, courseName: string): CrawlTask[] {
+function extractStudiesFromChapter(chapterId: string, chapterName: string, courseName: string): CrawlTask[] {
   const tasks: CrawlTask[] = [];
+  
+  // Re-query the element by ID to get fresh DOM reference after React re-render
+  const chapterDiv = document.getElementById(chapterId);
+  
+  if (!chapterDiv) {
+    console.warn('  ⚠️ Chapter element not found during extraction');
+    return [];
+  }
   
   // Find all study links (assuming they contain "/studies/" in the URL)
   const studyLinks = chapterDiv.querySelectorAll<HTMLAnchorElement>('a[href*="/studies/"]');
@@ -243,18 +274,22 @@ function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: stri
       return;
     }
     
-    // Extract clean study name using robust DOM traversal
+    // Extract clean study name using robust DOM traversal with wildcard selectors
     let studyName = 'Unknown Study';
     
-    // Step 1: Traverse up to the study container
-    const studyContainer = link.closest('div[class*="ChapterStudy_chapterStudyContainer"]');
+    // Step 1: Traverse up to the study container (wildcard to ignore hash suffixes)
+    const studyContainer = link.closest('[class*="chapterStudyContainer"]');
     
     if (studyContainer) {
-      // Step 2: Inside that container, query for the title element
-      const titleElement = studyContainer.querySelector('div[class*="bold13"], span[class*="bold13"]');
+      // Step 2: Inside that container, query for the title element (wildcard selectors)
+      const titleElement = studyContainer.querySelector('[class*="bold13"], [class*="studyTitle"], [class*="title"]');
       
       if (titleElement) {
-        studyName = titleElement.textContent?.trim() || 'Unknown Study';
+        // Make sure we're not grabbing the "Learn" button text
+        const text = titleElement.textContent?.trim() || '';
+        if (text && text.toLowerCase() !== 'learn' && text.length > 0) {
+          studyName = text;
+        }
       }
     }
     
