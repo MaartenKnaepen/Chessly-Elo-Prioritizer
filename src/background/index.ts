@@ -650,7 +650,9 @@ async function handleRefreshStats(): Promise<{ status: string }> {
 
 /**
  * Enable resource blocking for Worker Tab only (scoped blocking)
+ * DISABLED: Prioritizing page stability over performance
  */
+// @ts-ignore - Function disabled but kept for future use
 async function enableWorkerTabBlocking(tabId: number): Promise<void> {
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
@@ -679,7 +681,9 @@ async function enableWorkerTabBlocking(tabId: number): Promise<void> {
 
 /**
  * Disable resource blocking (cleanup)
+ * DISABLED: Prioritizing page stability over performance
  */
+// @ts-ignore - Function disabled but kept for future use
 async function disableWorkerTabBlocking(): Promise<void> {
   try {
     await chrome.declarativeNetRequest.updateSessionRules({
@@ -728,14 +732,14 @@ async function processTaskQueue(): Promise<void> {
       console.log('📄 Creating Worker Tab...');
       const tab = await chrome.tabs.create({
         url: 'about:blank',
-        active: false,
-        pinned: true
+        active: true,
+        pinned: false
       });
       workerTabId = tab.id!;
       console.log(`✅ Worker Tab created: ${workerTabId}`);
       
-      // Enable scoped resource blocking for this tab only
-      await enableWorkerTabBlocking(workerTabId);
+      // Resource blocking disabled - priority is page stability
+      // await enableWorkerTabBlocking(workerTabId);
     }
 
     // Step 2: Process each task sequentially
@@ -783,8 +787,8 @@ async function processTaskQueue(): Promise<void> {
       console.log('🧹 Closing Worker Tab...');
       
       try {
-        // Disable resource blocking
-        await disableWorkerTabBlocking();
+        // Resource blocking disabled - no need to clean up
+        // await disableWorkerTabBlocking();
         
         // Try to close the tab (might fail if user already closed it)
         await chrome.tabs.remove(workerTabId);

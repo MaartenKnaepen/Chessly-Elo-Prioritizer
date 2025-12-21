@@ -9,8 +9,8 @@ import type { CrawlTask, Message, ScanCompletePayload } from '../types';
 console.log('🔧 Content script initialized on Chessly page');
 
 // Configuration
-const EXPANSION_DELAY_MS = 800; // Wait for chapters to expand
-const MAX_WAIT_ATTEMPTS = 10;   // Max polls waiting for content to appear
+const EXPANSION_DELAY_MS = 1500; // Wait for chapters to expand (increased for sluggish UI)
+const MAX_WAIT_ATTEMPTS = 10;    // Max polls waiting for content to appear
 
 /**
  * Listen for SCAN_PAGE message from background
@@ -232,12 +232,23 @@ async function waitForChapterContent(chapterId: string): Promise<void> {
       return;
     }
     
-    // Check if study links are now visible
-    const studyLinks = freshDiv.querySelectorAll('a[href*="study"]');
+    // Find the container that holds study links
+    const container = freshDiv.querySelector('div[class*="chapterStudyContainer"]');
     
-    if (studyLinks.length > 0) {
-      // Content appeared!
-      return;
+    // Check if container exists and is visible (not display: none)
+    if (container) {
+      const computedStyle = window.getComputedStyle(container);
+      const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden';
+      
+      if (isVisible) {
+        // Check if study links are now visible
+        const studyLinks = freshDiv.querySelectorAll('a[href*="study"]');
+        
+        if (studyLinks.length > 0) {
+          // Content appeared and is visible!
+          return;
+        }
+      }
     }
     
     // Wait a bit and try again
@@ -278,7 +289,8 @@ function extractStudiesFromChapter(chapterId: string, chapterName: string, cours
     let studyName = 'Unknown Study';
     
     // Step 1: Traverse up to the study container (wildcard to ignore hash suffixes)
-    const studyContainer = link.closest('[class*="chapterStudyContainer"]');
+    // Match both 'ChapterStudy_chapterStudyContainer' (uppercase) and 'chapterStudyContainer' (lowercase)
+    const studyContainer = link.closest('div[class*="chapterStudyContainer"]');
     
     if (studyContainer) {
       // Step 2: Inside that container, query for the title element (wildcard selectors)
