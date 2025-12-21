@@ -168,6 +168,27 @@ async function initializeState(): Promise<void> {
   if (!result[STORAGE_KEYS.LICHESS_SETTINGS]) {
     await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_SETTINGS]: DEFAULT_LICHESS_SETTINGS });
   }
+  
+  // FORCE CLEAR ALL NETWORK RULES (Step 1 of plan)
+  // Ensures 100% clean network state - no residual blocking
+  console.log('🧹 Background Startup: Ensuring rules are cleared...');
+  try {
+    console.log('🧹 Force clearing all declarativeNetRequest rules...');
+    
+    // Clear session rules
+    await chrome.declarativeNetRequest.updateSessionRules({ 
+      removeRuleIds: [1] 
+    });
+    
+    // Clear dynamic rules (just in case they were persisted)
+    await chrome.declarativeNetRequest.updateDynamicRules({ 
+      removeRuleIds: [1, 2, 3, 4] 
+    });
+    
+    console.log('✅ All network rules cleared successfully (Rules Nuked)');
+  } catch (error) {
+    console.warn('⚠️ Failed to clear network rules (may not exist):', error);
+  }
 }
 
 /**
