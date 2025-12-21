@@ -11,6 +11,7 @@ export interface ExtractedLine {
   moves: string[];    // e.g., ["e4", "e5", "Nf3", "Nc6"]
   fen: string;        // Resulting FEN position after all moves
   stats?: LichessStats;
+  totalGames?: number; // Total number of games (for sorting)
 }
 
 export interface LichessStats {
@@ -18,6 +19,11 @@ export interface LichessStats {
   black: number;      // Number of black wins
   draws: number;      // Number of draws
   total?: number;     // Total games (computed)
+}
+
+export interface LichessSettings {
+  speeds: string[];   // e.g., ['blitz', 'rapid', 'classical']
+  ratings: number[];  // e.g., [1600, 1800, 2000, 2200, 2500]
 }
 
 export interface CrawlTask {
@@ -39,15 +45,18 @@ export type MessageType =
   | 'START_CRAWL'
   | 'SCAN_PAGE'
   | 'SCAN_COMPLETE'
-  | 'EXTRACT_MOVES'        // New: Command Worker Tab to extract moves
+  | 'EXTRACT_MOVES'        // Command Worker Tab to extract moves
+  | 'EXTRACTOR_READY'      // Content script signals it's loaded and ready
   | 'CRAWL_PROGRESS'
   | 'CRAWL_COMPLETE'
   | 'CRAWL_ERROR'
-  | 'STUDY_EXTRACTED'      // New: Streaming per-study results
-  | 'LINE_ENRICHED'        // New: Streaming enriched lines
+  | 'STUDY_EXTRACTED'      // Streaming per-study results
+  | 'LINE_ENRICHED'        // Streaming enriched lines
   | 'ENRICH_START'
   | 'ENRICH_PROGRESS'
   | 'ENRICH_COMPLETE'
+  | 'UPDATE_SETTINGS'      // Dashboard updates Lichess filter settings
+  | 'REFRESH_STATS'        // Command to re-enrich all lines with new settings
   | 'GET_STATUS';
 
 export interface Message {

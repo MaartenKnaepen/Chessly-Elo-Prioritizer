@@ -109,9 +109,43 @@ function extractCourseName(): string {
  * Process a single chapter - expand if needed and extract studies
  */
 async function processChapter(chapterDiv: HTMLDivElement, courseName: string): Promise<CrawlTask[]> {
-  // Get chapter name from the header
-  const chapterHeader = chapterDiv.querySelector('.chapter-header, [class*="chapter"], h2, h3');
-  const chapterName = chapterHeader?.textContent?.trim() || 'Unknown Chapter';
+  // Get clean chapter name - target the specific title element to exclude progress text
+  let chapterName = 'Unknown Chapter';
+  
+  // Look for the Chapter Title element (usually .Chapter_chapterTitle__sbxbv or similar)
+  const titleElement = chapterDiv.querySelector('[class*="Chapter_chapterTitle"], [class*="chapterTitle"]');
+  if (titleElement) {
+    // Extract only the text nodes, ignoring child elements that might contain "100%"
+    // Get first text node or use a more specific selector
+    let titleText = '';
+    
+    // Try to get the first child text node directly
+    for (const node of titleElement.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const text = node.textContent?.trim() || '';
+        if (text && !text.match(/^\d+%$/)) {
+          // Found text that's not just a percentage
+          titleText = text;
+          break;
+        }
+      }
+    }
+    
+    // If no text node found, fall back to textContent and clean it
+    if (!titleText) {
+      titleText = titleElement.textContent?.trim() || '';
+      // Remove percentage patterns and extra whitespace
+      titleText = titleText.replace(/\d+%/g, '').trim();
+    }
+    
+    chapterName = titleText.replace(/\s+/g, ' ').trim();
+  }
+  
+  // Fallback to old method if new method fails
+  if (!chapterName || chapterName === '') {
+    const chapterHeader = chapterDiv.querySelector('.chapter-header, [class*="chapter"], h2, h3');
+    chapterName = chapterHeader?.textContent?.trim().replace(/\d+%/g, '').replace(/\s+/g, ' ').trim() || 'Unknown Chapter';
+  }
   
   console.log(`  📂 Chapter: ${chapterName}`);
   
@@ -209,17 +243,28 @@ function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: stri
       return;
     }
     
-    // Extract study name from link text or nearby element
-    let studyName = link.textContent?.trim() || 'Unknown Study';
+    // Extract clean study name using robust DOM traversal
+    let studyName = 'Unknown Study';
     
-    // If the link text is empty, try to find a nearby label
-    if (!studyName || studyName.length === 0) {
-      const parent = link.parentElement;
-      studyName = parent?.textContent?.trim() || 'Unknown Study';
+    // Step 1: Traverse up to the study container
+    const studyContainer = link.closest('div[class*="ChapterStudy_chapterStudyContainer"]');
+    
+    if (studyContainer) {
+      // Step 2: Inside that container, query for the title element
+      const titleElement = studyContainer.querySelector('div[class*="bold13"], span[class*="bold13"]');
+      
+      if (titleElement) {
+        studyName = titleElement.textContent?.trim() || 'Unknown Study';
+      }
     }
     
-    // Clean up the study name (remove extra whitespace)
-    studyName = studyName.replace(/\s+/g, ' ').trim();
+    // Clean up the study name (remove extra whitespace, remove "Learn" if it's there)
+    studyName = studyName.replace(/\s+/g, ' ').replace(/^Learn\s*/i, '').trim();
+    
+    // Log if we still couldn't find a proper name
+    if (studyName === 'Unknown Study' || studyName === '') {
+      console.warn(`  ⚠️ Could not extract study name for URL: ${url}`);
+    }
     
     tasks.push({
       courseName,  // Add the course name to every task

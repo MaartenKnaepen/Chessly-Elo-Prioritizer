@@ -38,14 +38,5 @@
     "16": "cep.jpg",
     "48": "cep.jpg",
     "128": "cep.jpg"
-  },
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "resource_blocker",
-        "enabled": true,
-        "path": "src/rules.json"
-      }
-    ]
   }
 }

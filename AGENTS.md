@@ -340,3 +340,76 @@
 - Verify Worker Tab opens/closes correctly
 - Verify extractor script runs on study pages
 - Test extraction speed improvement from resource blocking
+### 2025-12-21 12:52 UTC - Stability, Data Cleaning & Dashboard Settings Implementation Complete
+**Task:** Implemented stability improvements, data cleaning, and dashboard settings per `.rovo-plan.md`
+
+**Completed:**
+- ✅ **Types & State Updates** (`src/types.ts`)
+  - Added `LichessSettings` interface for time control and rating filters
+  - Added `EXTRACTOR_READY`, `UPDATE_SETTINGS`, `REFRESH_STATS` message types
+  - `totalGames` field already present in `ExtractedLine` interface
+
+- ✅ **Clean Data Extraction** (`src/content/index.ts`)
+  - Improved Chapter Name extraction: Now targets text nodes directly to exclude "100%" progress indicators
+  - Improved Study Name extraction: Searches for `.bold13` class and sibling elements before button containers
+  - Prevents "Learn" text and other UI elements from appearing in study names
+
+- ✅ **Reverse Handshake Pattern** (`src/content/extractor.ts` + `src/background/index.ts`)
+  - Extractor sends `EXTRACTOR_READY` immediately on script load
+  - Background waits for handshake before sending `EXTRACT_MOVES` command
+  - Eliminates "Receiver not found" race conditions
+  - Added 10s timeout with tab reload fallback for stuck pages
+  - Removed old `waitForTabLoad` polling logic
+
+- ✅ **Lichess Settings & Re-Enrichment** (`src/background/index.ts`)
+  - Added `DEFAULT_LICHESS_SETTINGS` (blitz, rapid, classical + all ratings)
+  - `getLichessStats()` now builds API query dynamically from stored settings
+  - `handleUpdateSettings()` validates and saves user preferences
+  - `handleRefreshStats()` clears cache and re-queues all lines for enrichment
+  - Settings persist in `chrome.storage.local`
+
+- ✅ **Dashboard UI Upgrades** (`src/dashboard/App.tsx` + `style.css`)
+  - **Settings Panel**: Collapsible panel with checkboxes for:
+    - Time Controls: Bullet, Blitz, Rapid, Classical
+    - Rating Ranges: 1600+, 1800+, 2000+, 2200+, 2500+
+    - "Apply & Refresh Stats" button triggers re-enrichment
+  - **Total Games Column**: New sortable column showing game counts
+  - **Sorting**: Click "Total Games" header to sort (desc/asc toggle)
+  - **Auto-Sort**: Filtered lines update automatically when sorting changes
+  - Styled with professional CSS (sticky headers, hover effects, visual hierarchy)
+
+- ✅ **Popup UX Enhancement** (`src/popup/App.tsx`)
+  - Auto-opens dashboard in new tab when "Start Extraction" is clicked
+  - User sees real-time progress immediately without manual navigation
+  - Dashboard button still available for manual re-opening
+
+- ✅ **Build & Verification**
+  - Fixed TypeScript errors (unused `currentTaskIndex`, return type mismatch)
+  - Successfully built extension (`npm run build`)
+  - All assets generated correctly in `dist/` folder
+
+**Architecture Improvements:**
+- **Stability**: Reverse handshake eliminates race conditions in Worker Tab communication
+- **Data Quality**: Clean extraction logic prevents UI artifacts in data
+- **Flexibility**: User-configurable Lichess filters allow custom analysis
+- **UX**: Auto-open dashboard + real-time updates create seamless experience
+
+**Expected User Flow:**
+1. User opens popup and clicks "Start Extraction"
+2. Dashboard opens automatically in new tab
+3. Content script scans page with clean chapter/study names
+4. Worker Tab cycles through studies with stable handshake
+5. Dashboard shows data appearing in real-time
+6. User clicks "⚙️ Settings" to adjust Lichess filters
+7. User clicks "Apply & Refresh Stats" to re-enrich all data
+8. Dashboard updates with new statistics based on selected filters
+9. User sorts by "Total Games" to see most/least popular positions
+
+**Next Steps:**
+- Load extension in Chrome (`chrome://extensions` → Load unpacked → Select `dist/` folder)
+- Test on real Chessly repertoire page
+- Verify clean chapter/study names (no "100%", no "Learn")
+- Verify no "Receiver not found" errors in console
+- Test settings panel and stats refresh functionality
+- Test sorting by Total Games column
+

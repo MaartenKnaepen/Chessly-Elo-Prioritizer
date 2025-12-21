@@ -215,3 +215,99 @@ button:disabled {
   background: #f8d7da;
   color: #721c24;
 }
+
+/* Settings Panel */
+.settings-panel {
+  background: #ecf0f1;
+  border-bottom: 2px solid #bdc3c7;
+  padding: 20px 24px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.settings-panel h3 {
+  margin: 0 0 16px 0;
+  color: #2c3e50;
+  font-size: 18px;
+}
+
+.settings-content {
+  display: flex;
+  gap: 48px;
+  margin-bottom: 16px;
+}
+
+.settings-group h4 {
+  margin: 0 0 12px 0;
+  color: #34495e;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.checkbox-group label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #2c3e50;
+}
+
+.checkbox-group input[type="checkbox"] {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.apply-button {
+  background: #27ae60;
+  padding: 10px 20px;
+  font-weight: 600;
+}
+
+.apply-button:hover {
+  background: #229954;
+}
+
+.cancel-button {
+  background: #95a5a6;
+}
+
+.cancel-button:hover {
+  background: #7f8c8d;
+}
+
+.settings-note {
+  font-size: 13px;
+  color: #7f8c8d;
+  font-style: italic;
+  margin: 0;
+}
+
+/* Sortable header */
+.sortable-header {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortable-header:hover {
+  background: #2c3e50;
+}
+
+/* Total Games cell */
+.total-games-cell {
+  text-align: right;
+  font-weight: 600;
+  color: #2c3e50;
+}

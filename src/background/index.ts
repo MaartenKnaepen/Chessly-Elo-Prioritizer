@@ -14,6 +14,7 @@ import type {
   ExtractedLine,
   RawExtractedLine,
   LichessStats,
+  LichessSettings,
   Message,
   StatusResponse,
   CrawlCompletePayload,
@@ -30,7 +31,14 @@ const STORAGE_KEYS = {
   STATE: 'extension_state',
   LINES: 'extracted_lines',
   RAW_LINES: 'raw_lines',
-  LICHESS_CACHE: 'lichess_cache'
+  LICHESS_CACHE: 'lichess_cache',
+  LICHESS_SETTINGS: 'lichess_settings'
+};
+
+// Default Lichess settings
+const DEFAULT_LICHESS_SETTINGS: LichessSettings = {
+  speeds: ['blitz', 'rapid', 'classical'],
+  ratings: [1600, 1800, 2000, 2200, 2500]
 };
 
 // Lichess API Configuration
@@ -52,6 +60,7 @@ let isProcessingQueue = false;
 let workerTabId: number | null = null;
 let taskQueue: CrawlTask[] = [];
 let isProcessingTasks = false;
+let extractorReadyResolve: (() => void) | null = null;
 
 /**
  * Initialize state on installation
@@ -64,7 +73,7 @@ chrome.runtime.onInstalled.addListener(() => {
 /**
  * Message handler - routes messages from popup and offscreen
  */
-chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   console.log('📨 Received message:', message.type);
 
   switch (message.type) {
@@ -80,6 +89,15 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
         .then(sendResponse)
         .catch(error => {
           console.error('❌ Error handling scan complete:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
+    case 'EXTRACTOR_READY':
+      handleExtractorReady(sender.tab?.id)
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error handling extractor ready:', error);
           sendResponse({ error: error.message });
         });
       return true;
@@ -110,6 +128,24 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
       getStatus().then(sendResponse);
       return true;
 
+    case 'UPDATE_SETTINGS':
+      handleUpdateSettings(message.payload as LichessSettings)
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error updating settings:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
+    case 'REFRESH_STATS':
+      handleRefreshStats()
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error refreshing stats:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
     default:
       console.warn('⚠️ Unknown message type:', message.type);
       sendResponse({ error: 'Unknown message type' });
@@ -126,6 +162,12 @@ async function initializeState(): Promise<void> {
     queueLength: 0
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.STATE]: state });
+  
+  // Initialize default Lichess settings if not present
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LICHESS_SETTINGS);
+  if (!result[STORAGE_KEYS.LICHESS_SETTINGS]) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_SETTINGS]: DEFAULT_LICHESS_SETTINGS });
+  }
 }
 
 /**
@@ -232,6 +274,29 @@ async function handleScanComplete(payload: ScanCompletePayload): Promise<{ statu
   processTaskQueue();
 
   return { status: 'crawl_started' };
+}
+
+/**
+ * Handle EXTRACTOR_READY message from content script
+ * This is the reverse handshake - content script signals it's ready
+ */
+async function handleExtractorReady(tabId: number | undefined): Promise<{ status: string }> {
+  console.log(`🤝 Extractor ready signal received from tab ${tabId}`);
+  
+  // Check if this is from our worker tab
+  if (tabId !== workerTabId) {
+    console.log('⚠️ Extractor ready from non-worker tab, ignoring');
+    return { status: 'ignored' };
+  }
+  
+  // Resolve the promise if we're waiting for extractor
+  if (extractorReadyResolve) {
+    console.log('✅ Extractor handshake complete, sending EXTRACT_MOVES');
+    extractorReadyResolve();
+    extractorReadyResolve = null;
+  }
+  
+  return { status: 'acknowledged' };
 }
 
 /**
@@ -452,7 +517,16 @@ function generateFEN(moves: string[]): string {
 }
 
 /**
+ * Get current Lichess settings
+ */
+async function getLichessSettings(): Promise<LichessSettings> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LICHESS_SETTINGS);
+  return result[STORAGE_KEYS.LICHESS_SETTINGS] || DEFAULT_LICHESS_SETTINGS;
+}
+
+/**
  * Get Lichess statistics for a position (with throttling)
+ * Uses stored settings for ratings and speeds filters
  */
 async function getLichessStats(fen: string): Promise<LichessStats | undefined> {
   // Throttle requests
@@ -464,7 +538,13 @@ async function getLichessStats(fen: string): Promise<LichessStats | undefined> {
   lastLichessRequest = Date.now();
 
   try {
-    const url = `${LICHESS_API_BASE}/lichess?fen=${encodeURIComponent(fen)}&ratings=2000,2200,2500&speeds=blitz,rapid,classical`;
+    // Get current settings
+    const settings = await getLichessSettings();
+    
+    // Build query string dynamically from settings
+    const ratingsParam = settings.ratings.join(',');
+    const speedsParam = settings.speeds.join(',');
+    const url = `${LICHESS_API_BASE}/lichess?fen=${encodeURIComponent(fen)}&ratings=${ratingsParam}&speeds=${speedsParam}`;
     
     const response = await fetch(url);
     
@@ -491,6 +571,124 @@ async function getLichessStats(fen: string): Promise<LichessStats | undefined> {
   } catch (error) {
     console.warn('⚠️ Failed to fetch Lichess stats:', error);
     return undefined;
+  }
+}
+
+/**
+ * Handle UPDATE_SETTINGS message from dashboard
+ */
+async function handleUpdateSettings(settings: LichessSettings): Promise<{ status: string }> {
+  console.log('⚙️ Updating Lichess settings:', settings);
+  
+  // Validate settings
+  if (!settings.speeds || settings.speeds.length === 0) {
+    throw new Error('At least one speed must be selected');
+  }
+  
+  if (!settings.ratings || settings.ratings.length === 0) {
+    throw new Error('At least one rating must be selected');
+  }
+  
+  // Save settings
+  await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_SETTINGS]: settings });
+  
+  console.log('✅ Settings updated successfully');
+  return { status: 'updated' };
+}
+
+/**
+ * Handle REFRESH_STATS message - re-enrich all lines with new settings
+ */
+async function handleRefreshStats(): Promise<{ status: string }> {
+  console.log('🔄 Refreshing stats with new settings...');
+  
+  // Clear the enrichment queue
+  enrichmentQueue = [];
+  
+  // Get all extracted lines
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LINES);
+  const lines: ExtractedLine[] = result[STORAGE_KEYS.LINES] || [];
+  
+  if (lines.length === 0) {
+    console.log('⚠️ No lines to refresh');
+    return { status: 'no_lines' };
+  }
+  
+  console.log(`📦 Re-queuing ${lines.length} lines for enrichment...`);
+  
+  // Clear the Lichess cache to force fresh API calls
+  await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_CACHE]: {} });
+  
+  // Clear existing lines
+  await chrome.storage.local.set({ [STORAGE_KEYS.LINES]: [] });
+  
+  // Update state
+  await updateState({ state: 'enriching', lineCount: 0, queueLength: lines.length });
+  
+  // Re-add all lines to enrichment queue
+  for (const line of lines) {
+    enrichmentQueue.push({
+      courseName: line.opening,
+      raw: {
+        Chapter: line.chapter,
+        Study: line.study,
+        Variation: line.variation,
+        'Move Order': line.moves.join(' ')
+      },
+      fen: line.fen
+    });
+  }
+  
+  // Start processing queue
+  if (!isProcessingQueue) {
+    processQueue();
+  }
+  
+  console.log('✅ Stats refresh initiated');
+  return { status: 'refreshing' };
+}
+
+/**
+ * Enable resource blocking for Worker Tab only (scoped blocking)
+ */
+async function enableWorkerTabBlocking(tabId: number): Promise<void> {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      addRules: [
+        {
+          id: 1,
+          priority: 1,
+          action: { type: 'block' as chrome.declarativeNetRequest.RuleActionType },
+          condition: {
+            resourceTypes: [
+              'image' as chrome.declarativeNetRequest.ResourceType,
+              'media' as chrome.declarativeNetRequest.ResourceType,
+              'font' as chrome.declarativeNetRequest.ResourceType
+            ],
+            tabIds: [tabId]
+          }
+        }
+      ],
+      removeRuleIds: []
+    });
+    console.log(`🚫 Enabled resource blocking for Worker Tab ${tabId}`);
+  } catch (error) {
+    console.warn('⚠️ Failed to enable resource blocking:', error);
+  }
+}
+
+/**
+ * Disable resource blocking (cleanup)
+ */
+async function disableWorkerTabBlocking(): Promise<void> {
+  try {
+    await chrome.declarativeNetRequest.updateSessionRules({
+      addRules: [],
+      removeRuleIds: [1]
+    });
+    console.log('✅ Disabled resource blocking');
+  } catch (error) {
+    console.warn('⚠️ Failed to disable resource blocking:', error);
   }
 }
 
@@ -523,6 +721,9 @@ async function processTaskQueue(): Promise<void> {
       });
       workerTabId = tab.id!;
       console.log(`✅ Worker Tab created: ${workerTabId}`);
+      
+      // Enable scoped resource blocking for this tab only
+      await enableWorkerTabBlocking(workerTabId);
     }
 
     // Step 2: Process each task sequentially
@@ -541,21 +742,8 @@ async function processTaskQueue(): Promise<void> {
         // Navigate to study URL
         await chrome.tabs.update(workerTabId!, { url: task.url });
 
-        // Wait for page to load
-        await waitForTabLoad(workerTabId!);
-
-        // Send EXTRACT_MOVES command to the extractor content script
-        await chrome.tabs.sendMessage(workerTabId!, {
-          type: 'EXTRACT_MOVES',
-          payload: {
-            courseName: task.courseName,
-            chapter: task.chapter,
-            study: task.study
-          }
-        });
-
-        // The extractor will send STUDY_EXTRACTED message back
-        // (handleStudyExtracted will process it)
+        // Wait for EXTRACTOR_READY handshake (with timeout)
+        await waitForExtractorReady(workerTabId!, task);
 
         // Small delay to let the extraction message be sent
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -569,6 +757,10 @@ async function processTaskQueue(): Promise<void> {
     // Step 3: Cleanup - close worker tab
     if (workerTabId) {
       console.log('🧹 Closing Worker Tab...');
+      
+      // Disable resource blocking
+      await disableWorkerTabBlocking();
+      
       await chrome.tabs.remove(workerTabId);
       workerTabId = null;
     }
@@ -587,23 +779,37 @@ async function processTaskQueue(): Promise<void> {
 }
 
 /**
- * Wait for a tab to finish loading
+ * Wait for extractor ready signal (Reverse Handshake)
+ * With fallback timeout for reload if stuck
  */
-function waitForTabLoad(tabId: number): Promise<void> {
+function waitForExtractorReady(tabId: number, task: CrawlTask): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error('Tab load timeout'));
-    }, 15000); // 15 second timeout
+      extractorReadyResolve = null;
+      console.warn('⚠️ Extractor handshake timeout - reloading tab');
+      chrome.tabs.reload(tabId).then(() => {
+        reject(new Error('Extractor handshake timeout'));
+      });
+    }, 10000); // 10 second timeout
 
-    const listener = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
-      if (updatedTabId === tabId && changeInfo.status === 'complete') {
-        clearTimeout(timeout);
-        chrome.tabs.onUpdated.removeListener(listener);
+    // Set up the resolve handler
+    extractorReadyResolve = () => {
+      clearTimeout(timeout);
+      
+      // Now send EXTRACT_MOVES command
+      chrome.tabs.sendMessage(tabId, {
+        type: 'EXTRACT_MOVES',
+        payload: {
+          courseName: task.courseName,
+          chapter: task.chapter,
+          study: task.study
+        }
+      }).then(() => {
         resolve();
-      }
+      }).catch((error) => {
+        console.warn('⚠️ Failed to send EXTRACT_MOVES:', error);
+        resolve(); // Continue anyway
+      });
     };
-
-    chrome.tabs.onUpdated.addListener(listener);
   });
 }

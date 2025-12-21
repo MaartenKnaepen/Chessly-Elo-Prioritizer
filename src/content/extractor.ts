@@ -12,6 +12,12 @@ console.log('🔧 Extractor script loaded');
 const POLL_TIMEOUT_MS = 5000; // Give up after 5 seconds
 const POLL_INTERVAL_MS = 100; // Check every 100ms
 
+// REVERSE HANDSHAKE: Immediately signal to Background that we're ready
+// This eliminates race conditions where Background sends EXTRACT_MOVES before the script is ready
+chrome.runtime.sendMessage({ type: 'EXTRACTOR_READY' }).catch(err => {
+  console.warn('⚠️ Failed to send EXTRACTOR_READY (background may not be listening yet):', err);
+});
+
 // Listen for extraction commands from Background
 chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
   if (message.type === 'EXTRACT_MOVES') {

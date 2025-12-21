@@ -50,7 +50,14 @@ const App: React.FC = () => {
   const handleStartCrawl = async () => {
     setIsLoading(true);
     try {
+      // Start the crawl
       await chrome.runtime.sendMessage({ type: 'START_CRAWL' });
+      
+      // Auto-open dashboard immediately so user can see real-time progress
+      await chrome.tabs.create({ 
+        url: chrome.runtime.getURL('src/dashboard/index.html')
+      });
+      
       // Status will be updated via message listener
     } catch (error) {
       console.error('Failed to start crawl:', error);
