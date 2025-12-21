@@ -11,7 +11,6 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        offscreen: 'src/offscreen/index.html',
         dashboard: 'src/dashboard/index.html',
       },
     },

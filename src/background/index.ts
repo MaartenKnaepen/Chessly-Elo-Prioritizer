@@ -18,9 +18,9 @@ import type {
   StatusResponse,
   CrawlCompletePayload,
   ScanCompletePayload,
-  StartCrawlPayload,
   StudyExtractedPayload,
-  LineEnrichedPayload
+  LineEnrichedPayload,
+  CrawlTask
 } from '../types';
 
 console.log('🔧 Background service worker initialized');
@@ -47,6 +47,11 @@ interface QueueItem {
 
 let enrichmentQueue: QueueItem[] = [];
 let isProcessingQueue = false;
+
+// Worker Tab State
+let workerTabId: number | null = null;
+let taskQueue: CrawlTask[] = [];
+let isProcessingTasks = false;
 
 /**
  * Initialize state on installation
@@ -203,7 +208,7 @@ async function handleStartCrawl(): Promise<{ status: string }> {
 
 /**
  * Handle scan completion from content script
- * Start the offscreen crawler with the collected tasks
+ * Start the Worker Tab crawler with the collected tasks
  */
 async function handleScanComplete(payload: ScanCompletePayload): Promise<{ status: string }> {
   console.log(`✅ Scan complete! Received ${payload.count} tasks`);
@@ -220,18 +225,11 @@ async function handleScanComplete(payload: ScanCompletePayload): Promise<{ statu
     progress: { current: 0, total: payload.count }
   });
 
-  // Ensure offscreen document exists
-  await setupOffscreenDocument();
-
-  // Send START_CRAWL to offscreen with the tasks
-  const crawlPayload: StartCrawlPayload = {
-    tasks: payload.tasks
-  };
-
-  chrome.runtime.sendMessage({ 
-    type: 'START_CRAWL',
-    payload: crawlPayload
-  });
+  // Initialize task queue
+  taskQueue = payload.tasks;
+  
+  // Start processing tasks
+  processTaskQueue();
 
   return { status: 'crawl_started' };
 }
@@ -497,25 +495,115 @@ async function getLichessStats(fen: string): Promise<LichessStats | undefined> {
 }
 
 /**
- * Setup offscreen document for crawling
+ * Process task queue using Worker Tab
+ * Creates a pinned background tab that cycles through study URLs
  */
-async function setupOffscreenDocument(): Promise<void> {
-  const existingContexts = await chrome.runtime.getContexts({
-    contextTypes: ['OFFSCREEN_DOCUMENT' as chrome.runtime.ContextType]
-  });
-
-  if (existingContexts.length > 0) {
-    console.log('✅ Offscreen document already exists');
+async function processTaskQueue(): Promise<void> {
+  if (isProcessingTasks) {
+    console.log('⚠️ Task queue processor already running');
     return;
   }
 
-  console.log('📄 Creating offscreen document...');
-  
-  await chrome.offscreen.createDocument({
-    url: 'src/offscreen/index.html',
-    reasons: ['DOM_SCRAPING' as chrome.offscreen.Reason],
-    justification: 'Parse Chessly study pages to extract chess moves'
-  });
+  if (taskQueue.length === 0) {
+    console.log('✅ No tasks to process');
+    return;
+  }
 
-  console.log('✅ Offscreen document created');
+  isProcessingTasks = true;
+  console.log(`🔄 Starting Worker Tab processor with ${taskQueue.length} tasks...`);
+
+  try {
+    // Step 1: Create Worker Tab if needed
+    if (!workerTabId) {
+      console.log('📄 Creating Worker Tab...');
+      const tab = await chrome.tabs.create({
+        url: 'about:blank',
+        active: false,
+        pinned: true
+      });
+      workerTabId = tab.id!;
+      console.log(`✅ Worker Tab created: ${workerTabId}`);
+    }
+
+    // Step 2: Process each task sequentially
+    for (let i = 0; i < taskQueue.length; i++) {
+      const task = taskQueue[i];
+
+      console.log(`⏳ [${i + 1}/${taskQueue.length}] Processing: ${task.chapter} - ${task.study}`);
+
+      // Update progress
+      await updateState({
+        state: 'crawling',
+        progress: { current: i + 1, total: taskQueue.length }
+      });
+
+      try {
+        // Navigate to study URL
+        await chrome.tabs.update(workerTabId!, { url: task.url });
+
+        // Wait for page to load
+        await waitForTabLoad(workerTabId!);
+
+        // Send EXTRACT_MOVES command to the extractor content script
+        await chrome.tabs.sendMessage(workerTabId!, {
+          type: 'EXTRACT_MOVES',
+          payload: {
+            courseName: task.courseName,
+            chapter: task.chapter,
+            study: task.study
+          }
+        });
+
+        // The extractor will send STUDY_EXTRACTED message back
+        // (handleStudyExtracted will process it)
+
+        // Small delay to let the extraction message be sent
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+      } catch (error) {
+        console.warn(`⚠️ Failed to process task ${i + 1}:`, error);
+        // Continue with next task
+      }
+    }
+
+    // Step 3: Cleanup - close worker tab
+    if (workerTabId) {
+      console.log('🧹 Closing Worker Tab...');
+      await chrome.tabs.remove(workerTabId);
+      workerTabId = null;
+    }
+
+    // Step 4: Send completion signal
+    console.log('🎉 Task queue processing complete!');
+    await handleCrawlComplete({ lines: [], count: 0 });
+
+  } catch (error) {
+    console.error('❌ Task queue processing failed:', error);
+    await updateState({ state: 'error', error: error instanceof Error ? error.message : 'Unknown error' });
+  } finally {
+    isProcessingTasks = false;
+    taskQueue = [];
+  }
+}
+
+/**
+ * Wait for a tab to finish loading
+ */
+function waitForTabLoad(tabId: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error('Tab load timeout'));
+    }, 15000); // 15 second timeout
+
+    const listener = (updatedTabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timeout);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 }

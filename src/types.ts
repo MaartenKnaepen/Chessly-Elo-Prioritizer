@@ -39,6 +39,7 @@ export type MessageType =
   | 'START_CRAWL'
   | 'SCAN_PAGE'
   | 'SCAN_COMPLETE'
+  | 'EXTRACT_MOVES'        // New: Command Worker Tab to extract moves
   | 'CRAWL_PROGRESS'
   | 'CRAWL_COMPLETE'
   | 'CRAWL_ERROR'

@@ -5,8 +5,9 @@
   "description": "Fast extraction of chess repertoires from Chessly with Lichess statistics",
   "permissions": [
     "storage",
-    "offscreen",
-    "scripting"
+    "scripting",
+    "declarativeNetRequest",
+    "tabs"
   ],
   "host_permissions": [
     "https://chessly.com/*",
@@ -24,6 +25,12 @@
     {
       "matches": ["https://chessly.com/*"],
       "js": ["src/content/index.ts"],
+      "run_at": "document_idle",
+      "exclude_matches": ["https://chessly.com/*/studies/*"]
+    },
+    {
+      "matches": ["https://chessly.com/*/studies/*"],
+      "js": ["src/content/extractor.ts"],
       "run_at": "document_idle"
     }
   ],
@@ -32,10 +39,13 @@
     "48": "cep.jpg",
     "128": "cep.jpg"
   },
-  "web_accessible_resources": [
-    {
-      "resources": ["src/offscreen/index.html"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "resource_blocker",
+        "enabled": true,
+        "path": "src/rules.json"
+      }
+    ]
+  }
 }
