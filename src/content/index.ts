@@ -54,6 +54,10 @@ async function scanPage(): Promise<CrawlTask[]> {
   
   const tasks: CrawlTask[] = [];
   
+  // Capture the Course Name (usually the main h1 on the page)
+  const courseName = extractCourseName();
+  console.log(`📖 Course: ${courseName}`);
+  
   // Find all chapter divs
   const chapterDivs = document.querySelectorAll<HTMLDivElement>('div[id^="chapter-"]');
   
@@ -69,7 +73,7 @@ async function scanPage(): Promise<CrawlTask[]> {
     console.log(`📖 Processing chapter ${i + 1}/${chapterDivs.length}`);
     
     try {
-      const chapterTasks = await processChapter(chapterDiv);
+      const chapterTasks = await processChapter(chapterDiv, courseName);
       tasks.push(...chapterTasks);
     } catch (error) {
       console.warn(`⚠️ Failed to process chapter ${i + 1}:`, error);
@@ -81,9 +85,30 @@ async function scanPage(): Promise<CrawlTask[]> {
 }
 
 /**
+ * Extract the course/opening name from the page
+ * Usually found in the main h1 element
+ */
+function extractCourseName(): string {
+  // Try to find the main title (h1)
+  const h1 = document.querySelector('h1');
+  if (h1?.textContent?.trim()) {
+    return h1.textContent.trim();
+  }
+  
+  // Fallback: Try page title
+  const pageTitle = document.title;
+  if (pageTitle && !pageTitle.includes('Chessly')) {
+    return pageTitle.trim();
+  }
+  
+  // Last resort
+  return 'Unknown Course';
+}
+
+/**
  * Process a single chapter - expand if needed and extract studies
  */
-async function processChapter(chapterDiv: HTMLDivElement): Promise<CrawlTask[]> {
+async function processChapter(chapterDiv: HTMLDivElement, courseName: string): Promise<CrawlTask[]> {
   // Get chapter name from the header
   const chapterHeader = chapterDiv.querySelector('.chapter-header, [class*="chapter"], h2, h3');
   const chapterName = chapterHeader?.textContent?.trim() || 'Unknown Chapter';
@@ -99,7 +124,7 @@ async function processChapter(chapterDiv: HTMLDivElement): Promise<CrawlTask[]> 
   }
   
   // Extract study links
-  const studies = extractStudiesFromChapter(chapterDiv, chapterName);
+  const studies = extractStudiesFromChapter(chapterDiv, chapterName, courseName);
   console.log(`  ✅ Found ${studies.length} studies`);
   
   return studies;
@@ -169,7 +194,7 @@ async function waitForChapterContent(chapterDiv: HTMLDivElement): Promise<void> 
 /**
  * Extract all study links from a chapter
  */
-function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: string): CrawlTask[] {
+function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: string, courseName: string): CrawlTask[] {
   const tasks: CrawlTask[] = [];
   
   // Find all study links (assuming they contain "/studies/" in the URL)
@@ -197,6 +222,7 @@ function extractStudiesFromChapter(chapterDiv: HTMLDivElement, chapterName: stri
     studyName = studyName.replace(/\s+/g, ' ').trim();
     
     tasks.push({
+      courseName,  // Add the course name to every task
       chapter: chapterName,
       study: studyName,
       url

@@ -17,9 +17,10 @@ import type {
   Message,
   StatusResponse,
   CrawlCompletePayload,
-  EnrichProgressPayload,
   ScanCompletePayload,
-  StartCrawlPayload
+  StartCrawlPayload,
+  StudyExtractedPayload,
+  LineEnrichedPayload
 } from '../types';
 
 console.log('🔧 Background service worker initialized');
@@ -28,13 +29,24 @@ console.log('🔧 Background service worker initialized');
 const STORAGE_KEYS = {
   STATE: 'extension_state',
   LINES: 'extracted_lines',
-  RAW_LINES: 'raw_lines'
+  RAW_LINES: 'raw_lines',
+  LICHESS_CACHE: 'lichess_cache'
 };
 
 // Lichess API Configuration
 const LICHESS_API_BASE = 'https://explorer.lichess.ovh';
 const LICHESS_RATE_LIMIT_MS = 1000; // 1 request per second
 let lastLichessRequest = 0;
+
+// Enrichment Queue State
+interface QueueItem {
+  courseName: string;
+  raw: RawExtractedLine;
+  fen: string;
+}
+
+let enrichmentQueue: QueueItem[] = [];
+let isProcessingQueue = false;
 
 /**
  * Initialize state on installation
@@ -63,6 +75,15 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
         .then(sendResponse)
         .catch(error => {
           console.error('❌ Error handling scan complete:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
+    case 'STUDY_EXTRACTED':
+      handleStudyExtracted(message.payload as StudyExtractedPayload)
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error handling study extracted:', error);
           sendResponse({ error: error.message });
         });
       return true;
@@ -96,7 +117,8 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
 async function initializeState(): Promise<void> {
   const state: StatusResponse = {
     state: 'idle',
-    lineCount: 0
+    lineCount: 0,
+    queueLength: 0
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.STATE]: state });
 }
@@ -106,7 +128,13 @@ async function initializeState(): Promise<void> {
  */
 async function getStatus(): Promise<StatusResponse> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.STATE);
-  return result[STORAGE_KEYS.STATE] || { state: 'idle', lineCount: 0 };
+  const defaultState: StatusResponse = { state: 'idle', lineCount: 0, queueLength: 0 };
+  const currentState = result[STORAGE_KEYS.STATE] || defaultState;
+  
+  // Update with live queue length
+  currentState.queueLength = enrichmentQueue.length;
+  
+  return currentState;
 }
 
 /**
@@ -125,8 +153,18 @@ async function updateState(updates: Partial<StatusResponse>): Promise<void> {
 async function handleStartCrawl(): Promise<{ status: string }> {
   console.log('🚀 Starting crawl...');
 
+  // Reset queue and state
+  enrichmentQueue = [];
+  isProcessingQueue = false;
+  
+  // Clear previous data
+  await chrome.storage.local.set({ 
+    [STORAGE_KEYS.LINES]: [],
+    [STORAGE_KEYS.RAW_LINES]: []
+  });
+  
   // Update state to scanning
-  await updateState({ state: 'crawling', lineCount: 0 });
+  await updateState({ state: 'crawling', lineCount: 0, queueLength: 0 });
 
   try {
     // Step 1: Get the active tab
@@ -199,28 +237,76 @@ async function handleScanComplete(payload: ScanCompletePayload): Promise<{ statu
 }
 
 /**
- * Handle crawl completion - start enrichment
+ * Handle study extraction - streaming per-study results
+ * Immediately queue lines for enrichment
  */
-async function handleCrawlComplete(payload: CrawlCompletePayload): Promise<{ status: string }> {
-  console.log(`✅ Crawl complete! Received ${payload.count} lines`);
+async function handleStudyExtracted(payload: StudyExtractedPayload): Promise<{ status: string }> {
+  console.log(`📦 Study extracted: ${payload.lines.length} lines from course "${payload.courseName}"`);
 
-  // Save raw lines
-  await chrome.storage.local.set({ [STORAGE_KEYS.RAW_LINES]: payload.lines });
+  // Update state to enriching (if not already)
+  const currentState = await getStatus();
+  if (currentState.state === 'crawling') {
+    await updateState({ state: 'enriching' });
+  }
 
-  // Update state
-  await updateState({
-    state: 'enriching',
-    lineCount: payload.count,
-    progress: { current: 0, total: payload.count }
-  });
+  // Process each line immediately
+  for (const raw of payload.lines) {
+    try {
+      // Parse moves and generate FEN
+      const moves = raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
+      const fen = generateFEN(moves);
 
-  // Start enrichment process
-  enrichLines(payload.lines).catch(error => {
-    console.error('❌ Enrichment failed:', error);
-    updateState({ state: 'error', error: error.message });
-  });
+      // Check cache first
+      const cachedStats = await getCachedLichessStats(fen);
+      
+      if (cachedStats) {
+        // Cache hit! Broadcast enriched line immediately
+        const enriched: ExtractedLine = {
+          opening: payload.courseName,
+          chapter: raw.Chapter,
+          study: raw.Study,
+          variation: raw.Variation,
+          moves,
+          fen,
+          stats: cachedStats
+        };
 
-  return { status: 'enrichment_started' };
+        await saveEnrichedLine(enriched);
+        broadcastLineEnriched(enriched);
+      } else {
+        // Cache miss - add to enrichment queue
+        enrichmentQueue.push({
+          courseName: payload.courseName,
+          raw,
+          fen
+        });
+      }
+
+    } catch (error) {
+      console.warn(`⚠️ Failed to process line:`, error);
+    }
+  }
+
+  // Start queue processing if not already running
+  if (!isProcessingQueue && enrichmentQueue.length > 0) {
+    processQueue();
+  }
+
+  return { status: 'queued' };
+}
+
+/**
+ * Handle crawl completion - queue is still processing
+ */
+async function handleCrawlComplete(_payload: CrawlCompletePayload): Promise<{ status: string }> {
+  console.log(`✅ Crawl complete! Queue length: ${enrichmentQueue.length}`);
+
+  // If queue is empty, we're done
+  if (enrichmentQueue.length === 0 && !isProcessingQueue) {
+    await updateState({ state: 'complete' });
+  }
+
+  return { status: 'acknowledged' };
 }
 
 /**
@@ -233,80 +319,120 @@ async function handleCrawlError(payload: any): Promise<{ status: string }> {
 }
 
 /**
- * Enrich raw lines with FEN and Lichess stats
+ * Queue processor - runs continuously while queue has items
+ * Processes one item per second to respect Lichess rate limits
  */
-async function enrichLines(rawLines: RawExtractedLine[]): Promise<void> {
-  console.log('🎨 Starting enrichment...');
+async function processQueue(): Promise<void> {
+  if (isProcessingQueue) {
+    console.log('⚠️ Queue processor already running');
+    return;
+  }
 
-  const enrichedLines: ExtractedLine[] = [];
+  isProcessingQueue = true;
+  console.log('🔄 Starting queue processor...');
 
-  for (let i = 0; i < rawLines.length; i++) {
-    const raw = rawLines[i];
-    
+  while (enrichmentQueue.length > 0) {
+    const item = enrichmentQueue.shift();
+    if (!item) break;
+
     try {
-      // Parse moves and generate FEN
-      const moves = raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
-      const fen = generateFEN(moves);
-
       // Get Lichess stats (with throttling)
-      const stats = await getLichessStats(fen);
+      const stats = await getLichessStats(item.fen);
 
+      // Cache the result
+      await cacheLichessStats(item.fen, stats);
+
+      // Build enriched line
+      const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
       const enriched: ExtractedLine = {
-        opening: raw.Chapter, // Using Chapter as opening name
-        chapter: raw.Chapter,
-        study: raw.Study,
-        variation: raw.Variation,
+        opening: item.courseName,
+        chapter: item.raw.Chapter,
+        study: item.raw.Study,
+        variation: item.raw.Variation,
         moves,
-        fen,
+        fen: item.fen,
         stats
       };
 
-      enrichedLines.push(enriched);
+      // Save and broadcast
+      await saveEnrichedLine(enriched);
+      broadcastLineEnriched(enriched);
 
-      // Update progress
-      await updateState({
-        state: 'enriching',
-        lineCount: rawLines.length,
-        progress: { current: i + 1, total: rawLines.length }
-      });
-
-      // Send progress message to popup
-      chrome.runtime.sendMessage({
-        type: 'ENRICH_PROGRESS',
-        payload: {
-          current: i + 1,
-          total: rawLines.length,
-          currentLine: `${raw.Chapter} - ${raw.Study}`
-        } as EnrichProgressPayload
-      });
+      console.log(`✅ Enriched: ${item.raw.Chapter} - ${item.raw.Study} (Queue: ${enrichmentQueue.length})`);
 
     } catch (error) {
-      console.warn(`⚠️ Failed to enrich line ${i + 1}:`, error);
-      // Add line without stats
-      enrichedLines.push({
-        opening: raw.Chapter,
-        chapter: raw.Chapter,
-        study: raw.Study,
-        variation: raw.Variation,
-        moves: raw['Move Order'].split(' ').filter(m => m.trim().length > 0),
-        fen: 'error',
+      console.warn(`⚠️ Failed to enrich line:`, error);
+      
+      // Save line without stats
+      const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
+      const enriched: ExtractedLine = {
+        opening: item.courseName,
+        chapter: item.raw.Chapter,
+        study: item.raw.Study,
+        variation: item.raw.Variation,
+        moves,
+        fen: item.fen,
         stats: undefined
-      });
+      };
+
+      await saveEnrichedLine(enriched);
+      broadcastLineEnriched(enriched);
     }
+
+    // Update queue length in state
+    await updateState({ queueLength: enrichmentQueue.length });
   }
 
-  // Save enriched lines
-  await chrome.storage.local.set({ [STORAGE_KEYS.LINES]: enrichedLines });
-
-  // Update state to complete
-  await updateState({
-    state: 'complete',
-    lineCount: enrichedLines.length,
-    progress: undefined
-  });
-
-  console.log('🎉 Enrichment complete!');
+  isProcessingQueue = false;
+  console.log('🎉 Queue processing complete!');
+  
+  // Mark as complete
+  await updateState({ state: 'complete', queueLength: 0 });
   chrome.runtime.sendMessage({ type: 'ENRICH_COMPLETE' });
+}
+
+/**
+ * Save an enriched line to storage
+ */
+async function saveEnrichedLine(line: ExtractedLine): Promise<void> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LINES);
+  const lines: ExtractedLine[] = result[STORAGE_KEYS.LINES] || [];
+  lines.push(line);
+  await chrome.storage.local.set({ [STORAGE_KEYS.LINES]: lines });
+  
+  // Update line count
+  await updateState({ lineCount: lines.length });
+}
+
+/**
+ * Broadcast enriched line to dashboard/popup
+ */
+function broadcastLineEnriched(line: ExtractedLine): void {
+  chrome.runtime.sendMessage({
+    type: 'LINE_ENRICHED',
+    payload: { line } as LineEnrichedPayload
+  });
+}
+
+/**
+ * Get cached Lichess stats
+ */
+async function getCachedLichessStats(fen: string): Promise<LichessStats | undefined> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LICHESS_CACHE);
+  const cache: Record<string, LichessStats> = result[STORAGE_KEYS.LICHESS_CACHE] || {};
+  return cache[fen];
+}
+
+/**
+ * Cache Lichess stats
+ */
+async function cacheLichessStats(fen: string, stats: LichessStats | undefined): Promise<void> {
+  if (!stats) return;
+  
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LICHESS_CACHE);
+  const cache: Record<string, LichessStats> = result[STORAGE_KEYS.LICHESS_CACHE] || {};
+  cache[fen] = stats;
+  await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_CACHE]: cache });
 }
 
 /**

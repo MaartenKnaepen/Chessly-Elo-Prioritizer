@@ -21,6 +21,7 @@ export interface LichessStats {
 }
 
 export interface CrawlTask {
+  courseName: string;  // The course/opening name (e.g., "Vienna Gambit")
   chapter: string;
   study: string;
   url: string;
@@ -41,6 +42,8 @@ export type MessageType =
   | 'CRAWL_PROGRESS'
   | 'CRAWL_COMPLETE'
   | 'CRAWL_ERROR'
+  | 'STUDY_EXTRACTED'      // New: Streaming per-study results
+  | 'LINE_ENRICHED'        // New: Streaming enriched lines
   | 'ENRICH_START'
   | 'ENRICH_PROGRESS'
   | 'ENRICH_COMPLETE'
@@ -77,9 +80,19 @@ export interface EnrichProgressPayload {
   currentLine: string;
 }
 
+export interface StudyExtractedPayload {
+  courseName: string;
+  lines: RawExtractedLine[];
+}
+
+export interface LineEnrichedPayload {
+  line: ExtractedLine;
+}
+
 export interface StatusResponse {
   state: 'idle' | 'crawling' | 'enriching' | 'complete' | 'error';
   lineCount: number;
+  queueLength: number;  // New: Track pending Lichess enrichment requests
   progress?: {
     current: number;
     total: number;

@@ -174,3 +174,84 @@
 - Refresh the Chessly repertoire page
 - Run "Start Extraction" and verify console logs show correct detection and filtering
 - Verify extracted data only contains study links, not video/quiz/drill links
+
+### 2025-12-21 11:50 UTC - Streaming Pipeline & Dashboard UI Implementation Complete
+**Task:** Refactored to streaming architecture with concurrent enrichment and full-page dashboard per `.rovo-plan.md`
+
+**Problem:**
+- Batch & Wait architecture created poor UX - users waited minutes with no feedback
+- Cramped popup couldn't display 90+ lines of data effectively
+- No real-time visibility into enrichment progress
+
+**Completed:**
+- ✅ Updated data structures (`src/types.ts`)
+  - Added `courseName` field to `CrawlTask` for filtering/grouping
+  - Added `STUDY_EXTRACTED` and `LINE_ENRICHED` message types for streaming
+  - Added `StudyExtractedPayload` and `LineEnrichedPayload` interfaces
+  - Added `queueLength` to `StatusResponse` for live queue tracking
+  - Added `LICHESS_CACHE` storage key for caching stats
+- ✅ Enhanced Content Script (`src/content/index.ts`)
+  - Added `extractCourseName()` function to capture page title (h1)
+  - Passes `courseName` to every `CrawlTask` for dashboard filtering
+- ✅ Refactored Offscreen Crawler (`src/offscreen/crawler.ts`) to **Streaming Mode**
+  - Sends `STUDY_EXTRACTED` message immediately after each study is crawled
+  - No longer batches all results until the end
+  - Includes `courseName` in payload for enrichment
+  - Empty `CRAWL_COMPLETE` message signals end of crawl
+- ✅ Implemented Background Queue Engine (`src/background/index.ts`)
+  - **Concurrent enrichment:** Crawler and Lichess API run in parallel
+  - Added `enrichmentQueue[]` to track pending FEN→Stats requests
+  - Added `handleStudyExtracted()` to process streaming study results
+  - Checks Lichess cache before queueing (instant enrichment on cache hit)
+  - `processQueue()` continuously processes queue at 1 req/sec
+  - Broadcasts `LINE_ENRICHED` messages for real-time dashboard updates
+  - Added cache helpers: `getCachedLichessStats()` and `cacheLichessStats()`
+  - Queue state persists across service worker wake/sleep cycles via storage
+- ✅ Created Dashboard Entry Point (`src/dashboard/`)
+  - `index.html`: Standard HTML shell for full-page app
+  - `main.tsx`: React entry point
+  - `style.css`: Professional table styles with sticky headers, stats bars, filters
+- ✅ Built Dashboard UI (`src/dashboard/App.tsx`)
+  - Full-width data table with 6 columns: Opening, Chapter, Study, Variation, Moves, Stats
+  - **Real-time updates:** Listens for `LINE_ENRICHED` messages and appends rows live
+  - **Course filter:** Dropdown to filter by Opening/Course name
+  - **Visual stats bars:** Green (white), Gray (draw), Red (black) percentage bars
+  - Export to JSON functionality
+  - Live status badge showing state + line count + queue length
+  - Empty state with helpful instructions
+  - Sticky table headers for easy navigation
+- ✅ Updated Popup (`src/popup/App.tsx`)
+  - Replaced "Export JSON" with "📊 Open Dashboard" button
+  - Shows live queue count: "Enriching... | Queue: X"
+  - Opens dashboard in new tab via `chrome.tabs.create()`
+  - Dashboard button appears as soon as first line is extracted
+- ✅ Updated Build Config (`vite.config.ts`)
+  - Added `dashboard: 'src/dashboard/index.html'` to rollupOptions
+- ✅ Fixed TypeScript errors and successfully built (`npm run build`)
+
+**Architecture Improvements:**
+- **Streaming Pipeline:** Content Script → Offscreen (stream per study) → Background (queue) → Dashboard (real-time)
+- **No more waiting:** Users see data appear within ~1.5 seconds of extraction start
+- **Concurrent processing:** Crawler can run at 1 study/1.5s while Lichess enriches at 1 req/sec in parallel
+- **Cache-aware:** Repeated extractions are near-instant for cached positions
+- **Scalable UI:** Full-page dashboard can display 100+ lines comfortably
+
+**Performance Metrics:**
+- **Before:** Extract 90 lines → Wait 135 seconds for Lichess → See data
+- **After:** Extract 90 lines → See first line at 1.5s → Lines stream in real-time → Enrichment continues in background
+
+**Expected User Flow:**
+1. User clicks "Start Extraction" in Popup
+2. Content script scans page, captures course name (e.g., "Vienna Gambit")
+3. Crawler streams study results every ~1.5s
+4. Background immediately queues FEN for Lichess enrichment
+5. Dashboard shows rows appearing in real-time (cached = instant, uncached = ~1s delay)
+6. User can filter by course, export JSON, see live queue status
+7. Popup shows "X lines extracted (Y queued for Lichess)"
+
+**Next Steps:**
+- Test streaming pipeline on real Chessly course with 50+ studies
+- Verify cache persistence across extension restarts
+- Verify dashboard opens correctly and receives real-time updates
+- Test course filter with multiple courses
+- Monitor memory usage during large extractions

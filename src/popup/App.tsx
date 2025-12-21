@@ -4,7 +4,8 @@ import type { StatusResponse, Message } from '../types';
 const App: React.FC = () => {
   const [status, setStatus] = useState<StatusResponse>({
     state: 'idle',
-    lineCount: 0
+    lineCount: 0,
+    queueLength: 0
   });
   const [isLoading, setIsLoading] = useState(false);
 
@@ -63,23 +64,13 @@ const App: React.FC = () => {
     }
   };
 
-  const handleExportData = async () => {
+  const handleOpenDashboard = async () => {
     try {
-      const result = await chrome.storage.local.get('extracted_lines');
-      const lines = result.extracted_lines || [];
-      
-      const jsonString = JSON.stringify(lines, null, 2);
-      const blob = new Blob([jsonString], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `chessly-export-${Date.now()}.json`;
-      a.click();
-      
-      URL.revokeObjectURL(url);
+      await chrome.tabs.create({ 
+        url: chrome.runtime.getURL('src/dashboard/index.html')
+      });
     } catch (error) {
-      console.error('Failed to export data:', error);
+      console.error('Failed to open dashboard:', error);
     }
   };
 
@@ -107,9 +98,10 @@ const App: React.FC = () => {
           ? `Crawling studies... (${status.progress.current}/${status.progress.total})`
           : 'Crawling studies...';
       case 'enriching':
-        return status.progress 
-          ? `Enriching with Lichess stats... (${status.progress.current}/${status.progress.total})`
-          : 'Enriching data...';
+        const queueInfo = status.queueLength > 0 
+          ? ` | Queue: ${status.queueLength}` 
+          : '';
+        return `Enriching with Lichess stats...${queueInfo}`;
       case 'complete':
         return 'Extraction complete!';
       case 'error':
@@ -150,9 +142,14 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {status.state === 'complete' && (
+        {(status.state === 'enriching' || status.state === 'complete') && (
           <div className="line-count">
             {status.lineCount} lines extracted
+            {status.state === 'enriching' && status.queueLength > 0 && (
+              <span style={{ marginLeft: '8px', color: '#7f8c8d', fontSize: '12px' }}>
+                ({status.queueLength} queued for Lichess)
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -173,12 +170,12 @@ const App: React.FC = () => {
           )}
         </button>
 
-        {status.state === 'complete' && status.lineCount > 0 && (
+        {status.lineCount > 0 && (
           <button
             className="button secondary"
-            onClick={handleExportData}
+            onClick={handleOpenDashboard}
           >
-            Export JSON
+            📊 Open Dashboard
           </button>
         )}
       </div>

@@ -4,7 +4,7 @@
  * Runs in a hidden offscreen document to avoid blocking the UI
  */
 
-import type { CrawlTask, RawExtractedLine, Message, CrawlProgressPayload, CrawlCompletePayload, StartCrawlPayload } from '../types';
+import type { CrawlTask, RawExtractedLine, Message, CrawlProgressPayload, CrawlCompletePayload, StartCrawlPayload, StudyExtractedPayload } from '../types';
 
 // Configuration
 const TIMEOUT_MS = 10000; // Give up on a study after 10s
@@ -44,29 +44,31 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
 /**
  * Main crawl orchestrator
  * Now receives tasks directly from the background (via content script scan)
+ * Streams results per-study instead of batching at the end
  */
 async function startCrawl(tasks: CrawlTask[]): Promise<void> {
-  console.log(`🚀 Starting Polite Extraction (Serial Mode) with ${tasks.length} tasks...`);
+  console.log(`🚀 Starting Polite Extraction (Streaming Mode) with ${tasks.length} tasks...`);
 
-  // PHASE 2: Serial Extraction (Phase 1 is now done by content script)
-  const results = await extractAllStudies(tasks);
+  // PHASE 2: Serial Extraction with streaming results
+  await extractAllStudies(tasks);
 
-  // Send results back to background
+  // Send completion signal (no payload needed - lines already streamed)
   console.log('🎉 EXTRACTION SUCCESSFUL!');
   chrome.runtime.sendMessage({
     type: 'CRAWL_COMPLETE',
     payload: {
-      lines: results,
-      count: results.length
+      lines: [],  // Empty - we already streamed the lines
+      count: 0
     } as CrawlCompletePayload
   });
 }
 
 /**
  * PHASE 2: Extract data from all studies sequentially
+ * STREAMING: Send results immediately after each study is extracted
  */
-async function extractAllStudies(tasks: CrawlTask[]): Promise<RawExtractedLine[]> {
-  console.log('🚀 Starting Phase 2: Serial Extraction...');
+async function extractAllStudies(tasks: CrawlTask[]): Promise<void> {
+  console.log('🚀 Starting Phase 2: Serial Extraction (Streaming Mode)...');
   
   // Create ONE reusable iframe
   let iframe = document.getElementById('crawler_frame_master') as HTMLIFrameElement | null;
@@ -81,8 +83,6 @@ async function extractAllStudies(tasks: CrawlTask[]): Promise<RawExtractedLine[]
     });
     document.body.appendChild(iframe);
   }
-
-  const results: RawExtractedLine[] = [];
 
   // Process queue sequentially
   for (let i = 0; i < tasks.length; i++) {
@@ -103,14 +103,24 @@ async function extractAllStudies(tasks: CrawlTask[]): Promise<RawExtractedLine[]
     try {
       const lines = await fetchWithTimeout(iframe, task.url);
       
-      lines.forEach((line, idx) => {
-        results.push({
-          Chapter: task.chapter,
-          Study: task.study,
-          Variation: `Var ${idx + 1}`,
-          'Move Order': line
-        });
+      // Build the raw extracted lines for this study
+      const rawLines: RawExtractedLine[] = lines.map((line, idx) => ({
+        Chapter: task.chapter,
+        Study: task.study,
+        Variation: `Var ${idx + 1}`,
+        'Move Order': line
+      }));
+
+      // STREAM: Send this study's results immediately to background
+      chrome.runtime.sendMessage({
+        type: 'STUDY_EXTRACTED',
+        payload: {
+          courseName: task.courseName,
+          lines: rawLines
+        } as StudyExtractedPayload
       });
+
+      console.log(`✅ Streamed ${rawLines.length} lines from ${task.study}`);
 
     } catch (err) {
       console.warn(`⚠️ Failed ${task.study}:`, err);
@@ -126,8 +136,6 @@ async function extractAllStudies(tasks: CrawlTask[]): Promise<RawExtractedLine[]
   if (iframe.parentNode) {
     document.body.removeChild(iframe);
   }
-
-  return results;
 }
 
 /**
