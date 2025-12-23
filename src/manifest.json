@@ -5,12 +5,11 @@
   "description": "Fast extraction of chess repertoires from Chessly with Lichess statistics",
   "permissions": [
     "storage",
-    "scripting",
-    "declarativeNetRequest",
-    "tabs"
+    "scripting"
   ],
   "host_permissions": [
     "https://chessly.com/*",
+    "https://cag.chessly.com/*",
     "https://explorer.lichess.ovh/*"
   ],
   "background": {
@@ -25,12 +24,6 @@
     {
       "matches": ["https://chessly.com/*"],
       "js": ["src/content/index.ts"],
-      "run_at": "document_idle",
-      "exclude_matches": ["https://chessly.com/*/studies/*"]
-    },
-    {
-      "matches": ["https://chessly.com/*/studies/*"],
-      "js": ["src/content/extractor.ts"],
       "run_at": "document_idle"
     }
   ],

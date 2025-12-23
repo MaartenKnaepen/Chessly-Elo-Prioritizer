@@ -1,11 +1,11 @@
 /**
  * Background Service Worker (Manifest V3)
- * Orchestrates the crawl pipeline and enriches data with Lichess stats
+ * Orchestrates the enrichment pipeline with Lichess stats
  * 
  * Architecture:
  * - NO global variables for state (ephemeral worker)
  * - Use chrome.storage.local for persistence
- * - Coordinate offscreen document for crawling
+ * - Content script drives extraction via API
  * - Throttle Lichess API calls (1 req/sec max)
  */
 
@@ -18,10 +18,8 @@ import type {
   Message,
   StatusResponse,
   CrawlCompletePayload,
-  ScanCompletePayload,
   StudyExtractedPayload,
-  LineEnrichedPayload,
-  CrawlTask
+  LineEnrichedPayload
 } from '../types';
 
 console.log('🔧 Background service worker initialized');
@@ -56,12 +54,6 @@ interface QueueItem {
 let enrichmentQueue: QueueItem[] = [];
 let isProcessingQueue = false;
 
-// Worker Tab State
-let workerTabId: number | null = null;
-let taskQueue: CrawlTask[] = [];
-let isProcessingTasks = false;
-let extractorReadyResolve: (() => void) | null = null;
-
 /**
  * Initialize state on installation
  */
@@ -71,9 +63,9 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 /**
- * Message handler - routes messages from popup and offscreen
+ * Message handler - routes messages from popup and content script
  */
-chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) => {
   console.log('📨 Received message:', message.type);
 
   switch (message.type) {
@@ -83,24 +75,6 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
         sendResponse({ error: error.message });
       });
       return true; // Keep channel open for async response
-
-    case 'SCAN_COMPLETE':
-      handleScanComplete(message.payload as ScanCompletePayload)
-        .then(sendResponse)
-        .catch(error => {
-          console.error('❌ Error handling scan complete:', error);
-          sendResponse({ error: error.message });
-        });
-      return true;
-
-    case 'EXTRACTOR_READY':
-      handleExtractorReady(sender.tab?.id)
-        .then(sendResponse)
-        .catch(error => {
-          console.error('❌ Error handling extractor ready:', error);
-          sendResponse({ error: error.message });
-        });
-      return true;
 
     case 'STUDY_EXTRACTED':
       handleStudyExtracted(message.payload as StudyExtractedPayload)
@@ -146,6 +120,15 @@ chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) =>
         });
       return true;
 
+    case 'CLEAR_DATA':
+      handleClearData()
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error clearing data:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
     default:
       console.warn('⚠️ Unknown message type:', message.type);
       sendResponse({ error: 'Unknown message type' });
@@ -167,27 +150,6 @@ async function initializeState(): Promise<void> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.LICHESS_SETTINGS);
   if (!result[STORAGE_KEYS.LICHESS_SETTINGS]) {
     await chrome.storage.local.set({ [STORAGE_KEYS.LICHESS_SETTINGS]: DEFAULT_LICHESS_SETTINGS });
-  }
-  
-  // FORCE CLEAR ALL NETWORK RULES (Step 1 of plan)
-  // Ensures 100% clean network state - no residual blocking
-  console.log('🧹 Background Startup: Ensuring rules are cleared...');
-  try {
-    console.log('🧹 Force clearing all declarativeNetRequest rules...');
-    
-    // Clear session rules
-    await chrome.declarativeNetRequest.updateSessionRules({ 
-      removeRuleIds: [1] 
-    });
-    
-    // Clear dynamic rules (just in case they were persisted)
-    await chrome.declarativeNetRequest.updateDynamicRules({ 
-      removeRuleIds: [1, 2, 3, 4] 
-    });
-    
-    console.log('✅ All network rules cleared successfully (Rules Nuked)');
-  } catch (error) {
-    console.warn('⚠️ Failed to clear network rules (may not exist):', error);
   }
 }
 
@@ -225,14 +187,18 @@ async function handleStartCrawl(): Promise<{ status: string }> {
   enrichmentQueue = [];
   isProcessingQueue = false;
   
-  // Clear previous data
+  // Clear RAW_LINES only (keep LINES for persistence across scans)
   await chrome.storage.local.set({ 
-    [STORAGE_KEYS.LINES]: [],
     [STORAGE_KEYS.RAW_LINES]: []
   });
   
+  // Get current line count from existing data
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LINES);
+  const existingLines: ExtractedLine[] = result[STORAGE_KEYS.LINES] || [];
+  const startingLineCount = existingLines.length;
+  
   // Update state to scanning
-  await updateState({ state: 'crawling', lineCount: 0, queueLength: 0 });
+  await updateState({ state: 'crawling', lineCount: startingLineCount, queueLength: 0 });
 
   try {
     // Step 1: Get the active tab
@@ -269,56 +235,7 @@ async function handleStartCrawl(): Promise<{ status: string }> {
   }
 }
 
-/**
- * Handle scan completion from content script
- * Start the Worker Tab crawler with the collected tasks
- */
-async function handleScanComplete(payload: ScanCompletePayload): Promise<{ status: string }> {
-  console.log(`✅ Scan complete! Received ${payload.count} tasks`);
-
-  if (payload.count === 0) {
-    await updateState({ state: 'error', error: 'No studies found on the page' });
-    return { status: 'error' };
-  }
-
-  // Update state
-  await updateState({ 
-    state: 'crawling', 
-    lineCount: 0,
-    progress: { current: 0, total: payload.count }
-  });
-
-  // Initialize task queue
-  taskQueue = payload.tasks;
-  
-  // Start processing tasks
-  processTaskQueue();
-
-  return { status: 'crawl_started' };
-}
-
-/**
- * Handle EXTRACTOR_READY message from content script
- * This is the reverse handshake - content script signals it's ready
- */
-async function handleExtractorReady(tabId: number | undefined): Promise<{ status: string }> {
-  console.log(`🤝 Extractor ready signal received from tab ${tabId}`);
-  
-  // Check if this is from our worker tab
-  if (tabId !== workerTabId) {
-    console.log('⚠️ Extractor ready from non-worker tab, ignoring');
-    return { status: 'ignored' };
-  }
-  
-  // Resolve the promise if we're waiting for extractor
-  if (extractorReadyResolve) {
-    console.log('✅ Extractor handshake complete, sending EXTRACT_MOVES');
-    extractorReadyResolve();
-    extractorReadyResolve = null;
-  }
-  
-  return { status: 'acknowledged' };
-}
+// Worker Tab functions removed - content script now handles extraction via API
 
 /**
  * Handle study extraction - streaming per-study results
@@ -476,12 +393,31 @@ async function processQueue(): Promise<void> {
 }
 
 /**
- * Save an enriched line to storage
+ * Save an enriched line to storage with deduplication
+ * Unique key: opening + chapter + study + variation
  */
 async function saveEnrichedLine(line: ExtractedLine): Promise<void> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.LINES);
   const lines: ExtractedLine[] = result[STORAGE_KEYS.LINES] || [];
-  lines.push(line);
+  
+  // Check if line already exists
+  const existingIndex = lines.findIndex(existing => 
+    existing.opening === line.opening &&
+    existing.chapter === line.chapter &&
+    existing.study === line.study &&
+    existing.variation === line.variation
+  );
+  
+  if (existingIndex !== -1) {
+    // Update existing line (overwrite)
+    console.log(`🔄 Updating existing line: ${line.opening} - ${line.chapter} - ${line.study} - ${line.variation}`);
+    lines[existingIndex] = line;
+  } else {
+    // Add new line
+    console.log(`➕ Adding new line: ${line.opening} - ${line.chapter} - ${line.study} - ${line.variation}`);
+    lines.push(line);
+  }
+  
   await chrome.storage.local.set({ [STORAGE_KEYS.LINES]: lines });
   
   // Update line count
@@ -670,192 +606,31 @@ async function handleRefreshStats(): Promise<{ status: string }> {
 }
 
 /**
- * Enable resource blocking for Worker Tab only (scoped blocking)
- * DISABLED: Prioritizing page stability over performance
+ * Handle CLEAR_DATA message - clear all stored data
  */
-// @ts-ignore - Function disabled but kept for future use
-async function enableWorkerTabBlocking(tabId: number): Promise<void> {
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      addRules: [
-        {
-          id: 1,
-          priority: 1,
-          action: { type: 'block' as chrome.declarativeNetRequest.RuleActionType },
-          condition: {
-            resourceTypes: [
-              'image' as chrome.declarativeNetRequest.ResourceType,
-              'media' as chrome.declarativeNetRequest.ResourceType,
-              'font' as chrome.declarativeNetRequest.ResourceType
-            ],
-            tabIds: [tabId]
-          }
-        }
-      ],
-      removeRuleIds: []
-    });
-    console.log(`🚫 Enabled resource blocking for Worker Tab ${tabId}`);
-  } catch (error) {
-    console.warn('⚠️ Failed to enable resource blocking:', error);
-  }
-}
-
-/**
- * Disable resource blocking (cleanup)
- * DISABLED: Prioritizing page stability over performance
- */
-// @ts-ignore - Function disabled but kept for future use
-async function disableWorkerTabBlocking(): Promise<void> {
-  try {
-    await chrome.declarativeNetRequest.updateSessionRules({
-      addRules: [],
-      removeRuleIds: [1]
-    });
-    console.log('✅ Disabled resource blocking');
-  } catch (error) {
-    console.warn('⚠️ Failed to disable resource blocking:', error);
-  }
-}
-
-/**
- * Process task queue using Worker Tab
- * Creates a pinned background tab that cycles through study URLs
- */
-async function processTaskQueue(): Promise<void> {
-  if (isProcessingTasks) {
-    console.log('⚠️ Task queue processor already running');
-    return;
-  }
-
-  if (taskQueue.length === 0) {
-    console.log('✅ No tasks to process');
-    return;
-  }
-
-  isProcessingTasks = true;
-  console.log(`🔄 Starting Worker Tab processor with ${taskQueue.length} tasks...`);
-
-  try {
-    // Step 1: Verify existing Worker Tab or create new one
-    if (workerTabId) {
-      try {
-        // Verify the tab still exists
-        await chrome.tabs.get(workerTabId);
-        console.log(`✅ Using existing Worker Tab: ${workerTabId}`);
-      } catch (error) {
-        // Tab doesn't exist anymore (user closed it or extension restarted)
-        console.log('⚠️ Worker Tab no longer exists, creating new one...');
-        workerTabId = null;
-      }
-    }
-    
-    if (!workerTabId) {
-      console.log('📄 Creating Worker Tab...');
-      const tab = await chrome.tabs.create({
-        url: 'about:blank',
-        active: true,
-        pinned: false
-      });
-      workerTabId = tab.id!;
-      console.log(`✅ Worker Tab created: ${workerTabId}`);
-      
-      // Resource blocking disabled - priority is page stability
-      // await enableWorkerTabBlocking(workerTabId);
-    }
-
-    // Step 2: Process each task sequentially
-    for (let i = 0; i < taskQueue.length; i++) {
-      const task = taskQueue[i];
-
-      console.log(`⏳ [${i + 1}/${taskQueue.length}] Processing: ${task.chapter} - ${task.study}`);
-
-      // Update progress
-      await updateState({
-        state: 'crawling',
-        progress: { current: i + 1, total: taskQueue.length }
-      });
-
-      try {
-        // Navigate to study URL
-        await chrome.tabs.update(workerTabId!, { url: task.url });
-
-        // Wait for EXTRACTOR_READY handshake (with timeout)
-        await waitForExtractorReady(workerTabId!, task);
-
-        // Small delay to let the extraction message be sent
-        await new Promise(resolve => setTimeout(resolve, 500));
-
-      } catch (error) {
-        console.warn(`⚠️ Failed to process task ${i + 1}:`, error);
-        // Continue with next task
-      }
-    }
-
-    // Step 3: Send completion signal
-    console.log('🎉 Task queue processing complete!');
-    await handleCrawlComplete({ lines: [], count: 0 });
-
-  } catch (error) {
-    console.error('❌ Task queue processing failed:', error);
-    await updateState({ state: 'error', error: error instanceof Error ? error.message : 'Unknown error' });
-  } finally {
-    // Step 4: Cleanup - ALWAYS runs even if there's an error
-    isProcessingTasks = false;
-    taskQueue = [];
-    
-    // Close worker tab if it exists
-    if (workerTabId) {
-      console.log('🧹 Closing Worker Tab...');
-      
-      try {
-        // Resource blocking disabled - no need to clean up
-        // await disableWorkerTabBlocking();
-        
-        // Try to close the tab (might fail if user already closed it)
-        await chrome.tabs.remove(workerTabId);
-        console.log('✅ Worker Tab closed successfully');
-      } catch (error) {
-        console.log('⚠️ Worker Tab already closed or inaccessible');
-      } finally {
-        // ALWAYS reset workerTabId, even if removal fails
-        workerTabId = null;
-      }
-    }
-  }
-}
-
-/**
- * Wait for extractor ready signal (Reverse Handshake)
- * With fallback timeout for reload if stuck
- */
-function waitForExtractorReady(tabId: number, task: CrawlTask): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      extractorReadyResolve = null;
-      console.warn('⚠️ Extractor handshake timeout - reloading tab');
-      chrome.tabs.reload(tabId).then(() => {
-        reject(new Error('Extractor handshake timeout'));
-      });
-    }, 10000); // 10 second timeout
-
-    // Set up the resolve handler
-    extractorReadyResolve = () => {
-      clearTimeout(timeout);
-      
-      // Now send EXTRACT_MOVES command
-      chrome.tabs.sendMessage(tabId, {
-        type: 'EXTRACT_MOVES',
-        payload: {
-          courseName: task.courseName,
-          chapter: task.chapter,
-          study: task.study
-        }
-      }).then(() => {
-        resolve();
-      }).catch((error) => {
-        console.warn('⚠️ Failed to send EXTRACT_MOVES:', error);
-        resolve(); // Continue anyway
-      });
-    };
+async function handleClearData(): Promise<{ status: string }> {
+  console.log('🗑️ Clearing all data...');
+  
+  // Clear the enrichment queue
+  enrichmentQueue = [];
+  isProcessingQueue = false;
+  
+  // Clear all storage
+  await chrome.storage.local.set({ 
+    [STORAGE_KEYS.LINES]: [],
+    [STORAGE_KEYS.RAW_LINES]: [],
+    [STORAGE_KEYS.LICHESS_CACHE]: {}
   });
+  
+  // Reset state to idle
+  await updateState({ 
+    state: 'idle', 
+    lineCount: 0, 
+    queueLength: 0 
+  });
+  
+  console.log('✅ All data cleared successfully');
+  return { status: 'cleared' };
 }
+
+// Worker Tab logic removed - content script now handles extraction via API directly

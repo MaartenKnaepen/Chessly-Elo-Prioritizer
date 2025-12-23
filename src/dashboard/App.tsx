@@ -210,6 +210,30 @@ function App() {
     setShowSettings(false);
   };
 
+  const handleClearData = async () => {
+    // Confirm with user
+    const confirmed = window.confirm(
+      '⚠️ Are you sure you want to clear all data?\n\nThis will delete:\n• All extracted lines\n• All cached Lichess statistics\n\nThis action cannot be undone.'
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+
+    // Send clear data message
+    await chrome.runtime.sendMessage({ type: 'CLEAR_DATA' });
+    
+    // Clear local state
+    setLines([]);
+    setFilteredLines([]);
+    setCourses([]);
+    
+    // Reload status
+    await loadStatus();
+    
+    alert('✅ All data cleared successfully');
+  };
+
   return (
     <div className="dashboard">
       {/* Header */}
@@ -282,6 +306,17 @@ function App() {
           <p className="settings-note">
             Note: Applying new settings will re-fetch all Lichess statistics. This may take some time.
           </p>
+          
+          {/* Data Management Section */}
+          <div className="data-management-section">
+            <h4>Data Management</h4>
+            <p className="danger-zone-note">
+              Clear all stored data including extracted lines and cached statistics.
+            </p>
+            <button onClick={handleClearData} className="danger-button">
+              🗑️ Clear All Data
+            </button>
+          </div>
         </div>
       )}
 

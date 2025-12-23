@@ -15,8 +15,7 @@ const App: React.FC = () => {
 
     // Listen for updates from background
     const messageListener = (message: Message) => {
-      if (message.type === 'CRAWL_PROGRESS' || 
-          message.type === 'ENRICH_PROGRESS' || 
+      if (message.type === 'ENRICH_PROGRESS' || 
           message.type === 'CRAWL_COMPLETE' ||
           message.type === 'ENRICH_COMPLETE') {
         fetchStatus();

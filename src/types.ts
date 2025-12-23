@@ -44,10 +44,6 @@ export interface RawExtractedLine {
 export type MessageType = 
   | 'START_CRAWL'
   | 'SCAN_PAGE'
-  | 'SCAN_COMPLETE'
-  | 'EXTRACT_MOVES'        // Command Worker Tab to extract moves
-  | 'EXTRACTOR_READY'      // Content script signals it's loaded and ready
-  | 'CRAWL_PROGRESS'
   | 'CRAWL_COMPLETE'
   | 'CRAWL_ERROR'
   | 'STUDY_EXTRACTED'      // Streaming per-study results
@@ -57,6 +53,7 @@ export type MessageType =
   | 'ENRICH_COMPLETE'
   | 'UPDATE_SETTINGS'      // Dashboard updates Lichess filter settings
   | 'REFRESH_STATS'        // Command to re-enrich all lines with new settings
+  | 'CLEAR_DATA'           // Clear all stored data
   | 'GET_STATUS';
 
 export interface Message {

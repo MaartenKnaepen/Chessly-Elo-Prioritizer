@@ -311,3 +311,33 @@ button:disabled {
   font-weight: 600;
   color: #2c3e50;
 }
+
+/* Data Management Section */
+.data-management-section {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 2px solid #bdc3c7;
+}
+
+.data-management-section h4 {
+  margin: 0 0 8px 0;
+  color: #c0392b;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.danger-zone-note {
+  font-size: 13px;
+  color: #7f8c8d;
+  margin: 0 0 12px 0;
+}
+
+.danger-button {
+  background: #e74c3c;
+  padding: 10px 20px;
+  font-weight: 600;
+}
+
+.danger-button:hover {
+  background: #c0392b;
+}

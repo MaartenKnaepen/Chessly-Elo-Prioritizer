@@ -1,16 +1,18 @@
 /**
  * Content Script - Runs on Chessly pages
- * Handles "Phase 1" - DOM scraping and chapter expansion
- * Collects study URLs and sends them to the background script
+ * Handles scanning, API crawling, and streaming results to background
+ * This script now drives the entire extraction process
  */
 
-import type { CrawlTask, Message, ScanCompletePayload } from '../types';
+import type { CrawlTask, Message, StudyExtractedPayload } from '../types';
+import { fetchStudyData } from './api-crawler';
 
 console.log('🔧 Content script initialized on Chessly page');
 
 // Configuration
 const EXPANSION_DELAY_MS = 1500; // Wait for chapters to expand (increased for sluggish UI)
 const MAX_WAIT_ATTEMPTS = 10;    // Max polls waiting for content to appear
+const API_CRAWL_DELAY_MS = 200;  // Polite delay between API requests
 
 /**
  * Listen for SCAN_PAGE message from background
@@ -19,31 +21,89 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
   if (message.type === 'SCAN_PAGE') {
     console.log('🔍 Received SCAN_PAGE command');
     
-    scanPage()
-      .then(tasks => {
-        console.log(`✅ Scan complete! Found ${tasks.length} studies`);
-        
-        const payload: ScanCompletePayload = {
-          tasks,
-          count: tasks.length
-        };
-        
-        // Send SCAN_COMPLETE message to background
-        chrome.runtime.sendMessage({
-          type: 'SCAN_COMPLETE',
-          payload
-        });
-        
-        sendResponse({ success: true, payload });
+    // Start the extraction pipeline (async)
+    runExtractionPipeline()
+      .then(() => {
+        sendResponse({ success: true });
       })
       .catch(error => {
-        console.error('❌ Scan failed:', error);
+        console.error('❌ Extraction pipeline failed:', error);
         sendResponse({ success: false, error: error.message });
       });
     
     return true; // Keep channel open for async response
   }
 });
+
+/**
+ * Main extraction pipeline
+ * Scans page, calls API for each study, and streams results to background
+ */
+async function runExtractionPipeline(): Promise<void> {
+  console.log('🚀 Starting extraction pipeline...');
+  
+  // Show progress toast
+  showToast('Starting extraction...');
+  
+  // Step 1: Scan page and collect tasks
+  const tasks = await scanPage();
+  console.log(`✅ Scan complete! Found ${tasks.length} studies`);
+  
+  if (tasks.length === 0) {
+    showToast('No studies found', 'error');
+    throw new Error('No studies found on this page');
+  }
+  
+  // Step 2: Process each study via API
+  for (let i = 0; i < tasks.length; i++) {
+    const task = tasks[i];
+    console.log(`🔍 Extracting study ${i + 1}/${tasks.length}: ${task.study}`);
+    showToast(`Extracting study ${i + 1}/${tasks.length}...`);
+    
+    try {
+      // Fetch data from API
+      const rawLines = await fetchStudyData(task.url);
+      
+      // Fill in Chapter and Study metadata
+      const enrichedLines = rawLines.map(line => ({
+        ...line,
+        Chapter: task.chapter,
+        Study: task.study
+      }));
+      
+      console.log(`  ✅ Extracted ${enrichedLines.length} variations`);
+      
+      // Send STUDY_EXTRACTED message to background for enrichment
+      const payload: StudyExtractedPayload = {
+        courseName: task.courseName,
+        lines: enrichedLines
+      };
+      
+      chrome.runtime.sendMessage({
+        type: 'STUDY_EXTRACTED',
+        payload
+      });
+      
+      // Polite delay between API requests
+      if (i < tasks.length - 1) {
+        await sleep(API_CRAWL_DELAY_MS);
+      }
+      
+    } catch (error) {
+      console.error(`❌ Failed to extract study ${task.study}:`, error);
+      // Continue with next study
+    }
+  }
+  
+  // Step 3: Send CRAWL_COMPLETE message
+  console.log('✅ All studies extracted!');
+  showToast(`Extraction complete! ${tasks.length} studies processed`, 'success');
+  
+  chrome.runtime.sendMessage({
+    type: 'CRAWL_COMPLETE',
+    payload: {}
+  });
+}
 
 /**
  * Main page scanning logic
@@ -331,31 +391,58 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Visual feedback: Add a subtle indicator that the content script is active
-const indicator = document.createElement('div');
-indicator.id = 'chessly-extractor-indicator';
-Object.assign(indicator.style, {
-  position: 'fixed',
-  top: '10px',
-  right: '10px',
-  background: '#4CAF50',
-  color: 'white',
-  padding: '8px 12px',
-  borderRadius: '4px',
-  fontSize: '12px',
-  fontWeight: 'bold',
-  zIndex: '999999',
-  boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-  display: 'none'
-});
-indicator.textContent = '♟️ Chessly Extractor Ready';
-document.body.appendChild(indicator);
+/**
+ * Show toast notification on page
+ */
+function showToast(message: string, type: 'info' | 'success' | 'error' = 'info'): void {
+  let toast = document.getElementById('chessly-extractor-toast');
+  
+  // Create toast if it doesn't exist
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'chessly-extractor-toast';
+    Object.assign(toast.style, {
+      position: 'fixed',
+      top: '10px',
+      right: '10px',
+      padding: '12px 16px',
+      borderRadius: '6px',
+      fontSize: '14px',
+      fontWeight: '500',
+      zIndex: '999999',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+      transition: 'all 0.3s ease',
+      maxWidth: '300px',
+      color: 'white'
+    });
+    document.body.appendChild(toast);
+  }
+  
+  // Set color based on type
+  const colors = {
+    info: '#2196F3',
+    success: '#4CAF50',
+    error: '#f44336'
+  };
+  
+  toast.style.background = colors[type];
+  toast.style.display = 'block';
+  toast.textContent = `♟️ ${message}`;
+  
+  // Auto-hide after 3 seconds for success/error, keep info visible
+  if (type !== 'info') {
+    setTimeout(() => {
+      if (toast) {
+        toast.style.display = 'none';
+      }
+    }, 3000);
+  }
+}
 
-// Show indicator briefly on load
-indicator.style.display = 'block';
+// Visual feedback: Show ready indicator briefly on load
 setTimeout(() => {
-  indicator.style.display = 'none';
-}, 3000);
+  showToast('Chessly Extractor Ready', 'success');
+}, 500);
 
 // Export for testing (if needed)
-export { scanPage, processChapter };
+export { scanPage, processChapter, runExtractionPipeline };
