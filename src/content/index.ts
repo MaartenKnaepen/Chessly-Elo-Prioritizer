@@ -10,8 +10,6 @@ import { fetchStudyData } from './api-crawler';
 console.log('🔧 Content script initialized on Chessly page');
 
 // Configuration
-const EXPANSION_DELAY_MS = 1500; // Wait for chapters to expand (increased for sluggish UI)
-const MAX_WAIT_ATTEMPTS = 10;    // Max polls waiting for content to appear
 const API_CRAWL_DELAY_MS = 200;  // Polite delay between API requests
 
 /**
@@ -106,11 +104,12 @@ async function runExtractionPipeline(): Promise<void> {
 }
 
 /**
- * Main page scanning logic
- * Expands all chapters and collects study URLs
+ * Main page scanning logic - API-based
+ * Fetches course structure directly from Chessly API
  */
 async function scanPage(): Promise<CrawlTask[]> {
-  console.log('🚀 Starting page scan...');
+  console.log('🚀 Starting API scan...');
+  showToast('Scanning course structure...', 'info');
   
   const tasks: CrawlTask[] = [];
   
@@ -118,30 +117,114 @@ async function scanPage(): Promise<CrawlTask[]> {
   const courseName = extractCourseName();
   console.log(`📖 Course: ${courseName}`);
   
-  // Find all chapter divs
-  const chapterDivs = document.querySelectorAll<HTMLDivElement>('div[id^="chapter-"]');
+  // Extract courseId from URL
+  // Expected URL patterns:
+  // - https://chessly.com/courses/{courseId}
+  // - https://chessly.com/courses/{courseId}/...
+  const urlMatch = window.location.pathname.match(/\/courses\/([^\/]+)/);
   
-  if (chapterDivs.length === 0) {
-    throw new Error('No chapters found on this page. Are you on the Chessly repertoire overview?');
+  if (!urlMatch) {
+    throw new Error('Could not extract course ID from URL. Make sure you are on a Chessly course page.');
   }
   
-  console.log(`📚 Found ${chapterDivs.length} chapters`);
+  const courseId = urlMatch[1];
+  console.log(`🔑 Course ID: ${courseId}`);
   
-  // Process each chapter
-  for (let i = 0; i < chapterDivs.length; i++) {
-    const chapterDiv = chapterDivs[i];
-    console.log(`📖 Processing chapter ${i + 1}/${chapterDivs.length}`);
+  try {
+    // Step 1: Fetch all chapters for this course
+    const chaptersUrl = `https://cag.chessly.com/beta/openings/courses/${courseId}/chapters`;
+    console.log(`📡 Fetching chapters from API: ${chaptersUrl}`);
     
-    try {
-      const chapterTasks = await processChapter(chapterDiv, courseName);
-      tasks.push(...chapterTasks);
-    } catch (error) {
-      console.warn(`⚠️ Failed to process chapter ${i + 1}:`, error);
-      // Continue with next chapter
+    const chaptersResponse = await fetch(chaptersUrl, {
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+      }
+    });
+    
+    if (!chaptersResponse.ok) {
+      throw new Error(`Failed to fetch chapters (${chaptersResponse.status})`);
     }
+    
+    const chapters = await chaptersResponse.json();
+    
+    if (!Array.isArray(chapters) || chapters.length === 0) {
+      throw new Error('No chapters found in API response');
+    }
+    
+    console.log(`📚 Found ${chapters.length} chapters`);
+    
+    // Step 2: Fetch studies for all chapters concurrently (Promise.all for speed)
+    const chapterStudiesPromises = chapters.map(async (chapter: any) => {
+      const chapterId = chapter.id;
+      const chapterName = chapter.name || 'Unknown Chapter';
+      
+      console.log(`  📖 Fetching studies for chapter: ${chapterName}`);
+      
+      const studiesUrl = `https://cag.chessly.com/beta/openings/courses/chapters/${chapterId}/studies`;
+      
+      try {
+        const studiesResponse = await fetch(studiesUrl, {
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json',
+          }
+        });
+        
+        if (!studiesResponse.ok) {
+          console.warn(`  ⚠️ Failed to fetch studies for chapter ${chapterName} (${studiesResponse.status})`);
+          return [];
+        }
+        
+        const studies = await studiesResponse.json();
+        
+        if (!Array.isArray(studies)) {
+          console.warn(`  ⚠️ Invalid studies response for chapter ${chapterName}`);
+          return [];
+        }
+        
+        console.log(`  ✅ Found ${studies.length} studies in ${chapterName}`);
+        
+        // Map studies to CrawlTask format
+        return studies.map((study: any) => {
+          const studyId = study.id;
+          const studyName = study.name || 'Unknown Study';
+          
+          // Construct synthetic URL for api-crawler (needs URL to extract UUID)
+          const url = `https://chessly.com/courses/${courseId}/chapters/${chapterId}/studies/${studyId}`;
+          
+          return {
+            courseName,
+            chapter: chapterName,
+            study: studyName,
+            url
+          } as CrawlTask;
+        });
+        
+      } catch (error) {
+        console.warn(`  ⚠️ Error fetching studies for chapter ${chapterName}:`, error);
+        return [];
+      }
+    });
+    
+    // Wait for all chapter studies to be fetched
+    const allChapterTasks = await Promise.all(chapterStudiesPromises);
+    
+    // Flatten the array of arrays
+    for (const chapterTasks of allChapterTasks) {
+      tasks.push(...chapterTasks);
+    }
+    
+    console.log(`✅ API scan complete! Found ${tasks.length} studies across ${chapters.length} chapters`);
+    showToast(`Found ${tasks.length} studies`, 'success');
+    
+    return tasks;
+    
+  } catch (error) {
+    console.error('❌ API scan failed:', error);
+    showToast('API scan failed - check console', 'error');
+    throw error;
   }
-  
-  return tasks;
 }
 
 /**
@@ -163,225 +246,6 @@ function extractCourseName(): string {
   
   // Last resort
   return 'Unknown Course';
-}
-
-/**
- * Process a single chapter - expand if needed and extract studies
- */
-async function processChapter(chapterDiv: HTMLDivElement, courseName: string): Promise<CrawlTask[]> {
-  // Capture the chapter ID for DOM re-querying after React re-renders
-  const chapterId = chapterDiv.id;
-  if (!chapterId) {
-    console.warn('⚠️ Chapter div has no ID, skipping...');
-    return [];
-  }
-  
-  // Get clean chapter name - target the specific title element to exclude progress text
-  let chapterName = 'Unknown Chapter';
-  
-  // Look for the Chapter Title element (usually .Chapter_chapterTitle__sbxbv or similar)
-  const titleElement = chapterDiv.querySelector('[class*="Chapter_chapterTitle"], [class*="chapterTitle"]');
-  if (titleElement) {
-    // Extract only the text nodes, ignoring child elements that might contain "100%"
-    // Get first text node or use a more specific selector
-    let titleText = '';
-    
-    // Try to get the first child text node directly
-    for (const node of titleElement.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.textContent?.trim() || '';
-        if (text && !text.match(/^\d+%$/)) {
-          // Found text that's not just a percentage
-          titleText = text;
-          break;
-        }
-      }
-    }
-    
-    // If no text node found, fall back to textContent and clean it
-    if (!titleText) {
-      titleText = titleElement.textContent?.trim() || '';
-      // Remove percentage patterns and extra whitespace
-      titleText = titleText.replace(/\d+%/g, '').trim();
-    }
-    
-    chapterName = titleText.replace(/\s+/g, ' ').trim();
-  }
-  
-  // Fallback to old method if new method fails
-  if (!chapterName || chapterName === '') {
-    const chapterHeader = chapterDiv.querySelector('.chapter-header, [class*="chapter"], h2, h3');
-    chapterName = chapterHeader?.textContent?.trim().replace(/\d+%/g, '').replace(/\s+/g, ' ').trim() || 'Unknown Chapter';
-  }
-  
-  console.log(`  📂 Chapter: ${chapterName}`);
-  
-  // Check if chapter is collapsed
-  const isCollapsed = await isChapterCollapsed(chapterDiv);
-  
-  if (isCollapsed) {
-    console.log(`  🔓 Expanding chapter...`);
-    await expandChapter(chapterId);
-  }
-  
-  // Extract study links (pass ID instead of element)
-  const studies = extractStudiesFromChapter(chapterId, chapterName, courseName);
-  console.log(`  ✅ Found ${studies.length} studies`);
-  
-  return studies;
-}
-
-/**
- * Check if a chapter is collapsed
- */
-async function isChapterCollapsed(chapterDiv: HTMLDivElement): Promise<boolean> {
-  // Check if the chapter div has the "open" class (React-generated class pattern)
-  // If className includes "Chapter_open" or "open", it's expanded
-  const className = chapterDiv.className || '';
-  
-  if (className.includes('Chapter_open') || className.includes('open')) {
-    // Chapter is already open/expanded
-    return false;
-  }
-  
-  // If the class doesn't include "open", it's collapsed and needs expansion
-  return true;
-}
-
-/**
- * Expand a collapsed chapter
- */
-async function expandChapter(chapterId: string): Promise<void> {
-  // Re-query the element by ID to get fresh DOM reference
-  const chapterDiv = document.getElementById(chapterId);
-  
-  if (!chapterDiv) {
-    console.warn('  ⚠️ Chapter element not found, may have been removed');
-    return;
-  }
-  
-  // Find the clickable header - prioritize React-generated class pattern
-  const clickable = chapterDiv.querySelector<HTMLElement>(
-    'div[class*="Chapter_chapterHeader"], .chapter-header, [class*="chapter-header"], [class*="accordion"], button, h2, h3'
-  );
-  
-  if (!clickable) {
-    console.warn('  ⚠️ No clickable header found, assuming already expanded');
-    return;
-  }
-  
-  // Click to expand
-  clickable.click();
-  
-  // Wait for content to appear (pass ID, not element)
-  await waitForChapterContent(chapterId);
-}
-
-/**
- * Wait for chapter content to become visible after expansion
- */
-async function waitForChapterContent(chapterId: string): Promise<void> {
-  let attempts = 0;
-  
-  while (attempts < MAX_WAIT_ATTEMPTS) {
-    // Re-query the element by ID to get fresh DOM reference after React re-render
-    const freshDiv = document.getElementById(chapterId);
-    
-    if (!freshDiv) {
-      console.warn('  ⚠️ Chapter element disappeared during wait');
-      return;
-    }
-    
-    // Find the container that holds study links
-    const container = freshDiv.querySelector('div[class*="chapterStudyContainer"]');
-    
-    // Check if container exists and is visible (not display: none)
-    if (container) {
-      const computedStyle = window.getComputedStyle(container);
-      const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden';
-      
-      if (isVisible) {
-        // Check if study links are now visible
-        const studyLinks = freshDiv.querySelectorAll('a[href*="study"]');
-        
-        if (studyLinks.length > 0) {
-          // Content appeared and is visible!
-          return;
-        }
-      }
-    }
-    
-    // Wait a bit and try again
-    await sleep(EXPANSION_DELAY_MS);
-    attempts++;
-  }
-  
-  console.warn('  ⚠️ Chapter content did not appear after expansion');
-}
-
-/**
- * Extract all study links from a chapter
- */
-function extractStudiesFromChapter(chapterId: string, chapterName: string, courseName: string): CrawlTask[] {
-  const tasks: CrawlTask[] = [];
-  
-  // Re-query the element by ID to get fresh DOM reference after React re-render
-  const chapterDiv = document.getElementById(chapterId);
-  
-  if (!chapterDiv) {
-    console.warn('  ⚠️ Chapter element not found during extraction');
-    return [];
-  }
-  
-  // Find all study links (assuming they contain "/studies/" in the URL)
-  const studyLinks = chapterDiv.querySelectorAll<HTMLAnchorElement>('a[href*="/studies/"]');
-  
-  studyLinks.forEach(link => {
-    const url = link.href;
-    
-    // Filter: Exclude non-study links (video, quizzes, drill-shuffle)
-    if (url.endsWith('/video') || url.endsWith('/quizzes') || url.endsWith('/drill-shuffle')) {
-      // Skip these links - they're not the "Learn" study link we want
-      return;
-    }
-    
-    // Extract clean study name using robust DOM traversal with wildcard selectors
-    let studyName = 'Unknown Study';
-    
-    // Step 1: Traverse up to the study container (wildcard to ignore hash suffixes)
-    // Match both 'ChapterStudy_chapterStudyContainer' (uppercase) and 'chapterStudyContainer' (lowercase)
-    const studyContainer = link.closest('div[class*="chapterStudyContainer"]');
-    
-    if (studyContainer) {
-      // Step 2: Inside that container, query for the title element (wildcard selectors)
-      const titleElement = studyContainer.querySelector('[class*="bold13"], [class*="studyTitle"], [class*="title"]');
-      
-      if (titleElement) {
-        // Make sure we're not grabbing the "Learn" button text
-        const text = titleElement.textContent?.trim() || '';
-        if (text && text.toLowerCase() !== 'learn' && text.length > 0) {
-          studyName = text;
-        }
-      }
-    }
-    
-    // Clean up the study name (remove extra whitespace, remove "Learn" if it's there)
-    studyName = studyName.replace(/\s+/g, ' ').replace(/^Learn\s*/i, '').trim();
-    
-    // Log if we still couldn't find a proper name
-    if (studyName === 'Unknown Study' || studyName === '') {
-      console.warn(`  ⚠️ Could not extract study name for URL: ${url}`);
-    }
-    
-    tasks.push({
-      courseName,  // Add the course name to every task
-      chapter: chapterName,
-      study: studyName,
-      url
-    });
-  });
-  
-  return tasks;
 }
 
 /**
@@ -445,4 +309,4 @@ setTimeout(() => {
 }, 500);
 
 // Export for testing (if needed)
-export { scanPage, processChapter, runExtractionPipeline };
+export { scanPage, runExtractionPipeline };

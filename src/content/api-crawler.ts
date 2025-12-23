@@ -7,14 +7,12 @@
 import type { RawExtractedLine } from '../types';
 
 interface ApiMove {
-  fen: string;
-  move: string;
-  nextMoves?: ApiMove[];
+  san: string;      // "e4"
+  nextFen: string;  // Pointer to next key in the graph
+  fen: string;      // Current FEN (redundant but present)
 }
 
-interface StudyApiResponse {
-  moves: ApiMove[];
-}
+type StudyApiResponse = Record<string, ApiMove[]>;
 
 /**
  * Extract UUID from Chessly study URL
@@ -53,13 +51,13 @@ export async function fetchStudyData(studyUrl: string): Promise<RawExtractedLine
     
     const data: StudyApiResponse = await response.json();
     
-    if (!data.moves || !Array.isArray(data.moves)) {
+    if (typeof data !== 'object' || data === null) {
       console.error('❌ Invalid API response format:', data);
       return [];
     }
     
     // Parse the move graph into linear variations
-    return parseMovesGraph(data.moves);
+    return parseMovesGraph(data);
     
   } catch (error) {
     console.error('❌ API fetch error:', error);
@@ -71,26 +69,68 @@ export async function fetchStudyData(studyUrl: string): Promise<RawExtractedLine
  * Parse the move graph into linear variations
  * Uses DFS with cycle detection and move deduplication
  */
-function parseMovesGraph(rootMoves: ApiMove[]): RawExtractedLine[] {
+function parseMovesGraph(graph: Record<string, ApiMove[]>): RawExtractedLine[] {
   const lines: RawExtractedLine[] = [];
   let variationCounter = 1;
+  
+  // Standard chess starting position FEN
+  const START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
   
   // Track which FENs we've already visited to prevent infinite loops
   const visitedFens = new Set<string>();
   
   /**
    * Recursive DFS traversal
-   * @param moves - Current moves to process
+   * @param currentFen - Current position FEN to look up in graph
    * @param currentPath - Accumulated move list (SAN notation)
    * @param depth - Current depth in the tree (for debugging)
    */
-  function traverse(moves: ApiMove[], currentPath: string[], depth: number = 0) {
+  function traverse(currentFen: string, currentPath: string[], depth: number = 0) {
+    // Check for cycles
+    if (visitedFens.has(currentFen)) {
+      console.warn(`⚠️ Cycle detected at FEN: ${currentFen.substring(0, 20)}...`);
+      
+      // Save the line up to this point if we have moves
+      if (currentPath.length > 0) {
+        lines.push({
+          Chapter: '', // Will be filled in by content script
+          Study: '',   // Will be filled in by content script
+          Variation: `Var ${variationCounter++}`,
+          'Move Order': currentPath.join(' ')
+        });
+      }
+      
+      return;
+    }
+    
+    // Mark this FEN as visited
+    visitedFens.add(currentFen);
+    
+    // Get moves available from this position
+    const moves = graph[currentFen];
+    
+    // If no moves available, this is a leaf node
+    if (!moves || moves.length === 0) {
+      // Save the line if we have moves
+      if (currentPath.length > 0) {
+        lines.push({
+          Chapter: '', // Will be filled in by content script
+          Study: '',   // Will be filled in by content script
+          Variation: `Var ${variationCounter++}`,
+          'Move Order': currentPath.join(' ')
+        });
+      }
+      
+      visitedFens.delete(currentFen);
+      return;
+    }
+    
     // Deduplicate moves at this node (same move can appear multiple times)
     const uniqueMoves = new Map<string, ApiMove>();
     
     for (const moveObj of moves) {
-      if (!uniqueMoves.has(moveObj.move)) {
-        uniqueMoves.set(moveObj.move, moveObj);
+      if (!uniqueMoves.has(moveObj.san)) {
+        uniqueMoves.set(moveObj.san, moveObj);
       }
     }
     
@@ -98,45 +138,34 @@ function parseMovesGraph(rootMoves: ApiMove[]): RawExtractedLine[] {
     for (const [moveSan, moveObj] of uniqueMoves) {
       const newPath = [...currentPath, moveSan];
       
-      // Check for cycles using FEN
-      if (visitedFens.has(moveObj.fen)) {
-        // Cycle detected - this is a leaf node for our purposes
-        console.warn(`⚠️ Cycle detected at FEN: ${moveObj.fen.substring(0, 20)}...`);
-        
-        // Save the line up to this point
-        lines.push({
-          Chapter: '', // Will be filled in by content script
-          Study: '',   // Will be filled in by content script
-          Variation: `Var ${variationCounter++}`,
-          'Move Order': newPath.join(' ')
-        });
-        
-        continue;
-      }
-      
-      // Mark this FEN as visited
-      visitedFens.add(moveObj.fen);
-      
-      // If this move has no children, it's a leaf node - save the line
-      if (!moveObj.nextMoves || moveObj.nextMoves.length === 0) {
-        lines.push({
-          Chapter: '', // Will be filled in by content script
-          Study: '',   // Will be filled in by content script
-          Variation: `Var ${variationCounter++}`,
-          'Move Order': newPath.join(' ')
-        });
-      } else {
-        // Recurse into children
-        traverse(moveObj.nextMoves, newPath, depth + 1);
-      }
-      
-      // Unmark FEN after exploring this branch (backtrack)
-      visitedFens.delete(moveObj.fen);
+      // Recurse into the next position
+      traverse(moveObj.nextFen, newPath, depth + 1);
     }
+    
+    // Unmark FEN after exploring this branch (backtrack)
+    visitedFens.delete(currentFen);
   }
   
-  // Start traversal from root moves
-  traverse(rootMoves, [], 0);
+  // Find starting position
+  if (graph[START_FEN]) {
+    // Standard case: start from standard starting position
+    traverse(START_FEN, [], 0);
+  } else {
+    // Fallback: try to find a starting position by looking for the shortest FEN
+    // (starting position has fewer piece movements)
+    console.warn('⚠️ Standard starting FEN not found, searching for alternative start...');
+    const fens = Object.keys(graph);
+    
+    if (fens.length > 0) {
+      // Sort by FEN length (heuristic: starting positions tend to be shorter)
+      fens.sort((a, b) => a.length - b.length);
+      const startFen = fens[0];
+      console.log(`📍 Using alternative starting FEN: ${startFen.substring(0, 30)}...`);
+      traverse(startFen, [], 0);
+    } else {
+      console.error('❌ No positions found in graph');
+    }
+  }
   
   return lines;
 }
