@@ -32,12 +32,6 @@
       "matches": ["https://chessly.com/*/studies/*"],
       "js": ["src/content/extractor.ts"],
       "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://chessly.com/*"],
-      "js": ["src/content/interceptor.js"],
-      "run_at": "document_start",
-      "world": "MAIN"
     }
   ],
   "icons": {

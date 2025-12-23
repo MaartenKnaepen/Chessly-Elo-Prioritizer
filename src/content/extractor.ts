@@ -2,6 +2,7 @@
  * Extractor Content Script
  * Runs on Chessly study pages in a Worker Tab
  * Extracts move data from the "Analyze" button when commanded by Background
+ * SIMPLIFIED: Only uses DOM extraction method (proven to work)
  */
 
 import type { Message, StudyExtractedPayload, RawExtractedLine } from '../types';
@@ -11,28 +12,6 @@ console.log('🔧 Extractor script loaded');
 // Configuration
 const POLL_TIMEOUT_MS = 15000; // Give up after 15 seconds (allows time for slow CPU/network)
 const POLL_INTERVAL_MS = 100; // Check every 100ms
-const INTERCEPTOR_TIMEOUT_MS = 5000; // Wait max 5 seconds for network data
-
-// State for network interception
-let interceptedData: any = null;
-let currentTaskMetadata: { courseName: string; chapter: string; study: string } | null = null;
-
-// LISTEN FOR INTERCEPTED DATA from the page context
-// Note: interceptor.js is now registered as a MAIN world content script in manifest.json
-window.addEventListener('message', (event) => {
-  // Only accept messages from same origin
-  if (event.source !== window) return;
-  
-  if (event.data?.type === 'CHESSLY_DATA') {
-    console.log('📨 Received intercepted data from fetch interceptor');
-    interceptedData = event.data.data;
-    
-    // If we're currently waiting for data, process it immediately
-    if (currentTaskMetadata) {
-      processInterceptedData(currentTaskMetadata);
-    }
-  }
-});
 
 // REVERSE HANDSHAKE: Immediately signal to Background that we're ready
 // This eliminates race conditions where Background sends EXTRACT_MOVES before the script is ready
@@ -67,92 +46,13 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
 });
 
 /**
- * Process intercepted network data
- */
-function processInterceptedData(metadata: { courseName: string; chapter: string; study: string }): void {
-  if (!interceptedData) return;
-  
-  console.log('🔄 Processing intercepted data...');
-  
-  // Search recursively for move data
-  const lines = findKeys(interceptedData, ['lines', 'moves', 'pgn', 'fen', 'steps']);
-  
-  if (lines.length > 0) {
-    console.log(`✅ Found ${lines.length} lines from network interception`);
-    
-    const rawLines: RawExtractedLine[] = lines.map((line, idx) => ({
-      Chapter: metadata.chapter,
-      Study: metadata.study,
-      Variation: `Var ${idx + 1}`,
-      'Move Order': line
-    }));
-    
-    // Send results to Background
-    chrome.runtime.sendMessage({
-      type: 'STUDY_EXTRACTED',
-      payload: {
-        courseName: metadata.courseName,
-        lines: rawLines
-      } as StudyExtractedPayload
-    });
-    
-    // Clear state
-    interceptedData = null;
-    currentTaskMetadata = null;
-  }
-}
-
-/**
  * Extract moves from the current study page
+ * SIMPLIFIED: Only uses DOM extraction method
  */
 async function extractMoves(courseName: string, chapter: string, study: string): Promise<void> {
   console.log(`🔍 Extracting: ${chapter} - ${study}`);
   
-  // Store metadata for interceptor callback
-  currentTaskMetadata = { courseName, chapter, study };
-  
-  // TRY METHOD 1: Wait for network interceptor (most reliable - captures data from fetch)
-  console.log('⏳ Waiting for network data...');
-  const startTime = Date.now();
-  
-  while (Date.now() - startTime < INTERCEPTOR_TIMEOUT_MS) {
-    if (interceptedData) {
-      processInterceptedData({ courseName, chapter, study });
-      return;
-    }
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  
-  console.log('⚠️ Network interception timeout, trying __NEXT_DATA__...');
-  
-  // TRY METHOD 2: Extract from __NEXT_DATA__ JSON
-  const jsonLines = await extractFromNextData();
-  
-  if (jsonLines && jsonLines.length > 0) {
-    console.log(`✅ Found ${jsonLines.length} lines in JSON data`);
-    
-    // Build raw extracted lines
-    const rawLines: RawExtractedLine[] = jsonLines.map((line, idx) => ({
-      Chapter: chapter,
-      Study: study,
-      Variation: `Var ${idx + 1}`,
-      'Move Order': line
-    }));
-    
-    // Send results to Background
-    chrome.runtime.sendMessage({
-      type: 'STUDY_EXTRACTED',
-      payload: {
-        courseName,
-        lines: rawLines
-      } as StudyExtractedPayload
-    });
-    return;
-  }
-  
-  console.log('⚠️ JSON extraction failed, falling back to DOM method...');
-  
-  // FALLBACK METHOD 3: Wait for the \"Analyze\" button to appear
+  // Wait for the "Analyze" button to appear
   const analyzeLink = await waitForAnalyzeButton();
   
   if (!analyzeLink) {
@@ -210,116 +110,21 @@ async function extractMoves(courseName: string, chapter: string, study: string):
 }
 
 /**
- * Extract moves from __NEXT_DATA__ JSON (most reliable method)
- * Next.js stores the entire React state in a script tag
- */
-async function extractFromNextData(): Promise<string[] | null> {
-  try {
-    // STEP 2: AGGRESSIVE SEARCH - Use wildcard selector
-    const scriptTag = document.querySelector('script[id*="NEXT_DATA"]') as HTMLScriptElement;
-    
-    if (!scriptTag || !scriptTag.textContent) {
-      console.log('⚠️ __NEXT_DATA__ script tag not found');
-      return null;
-    }
-    
-    // Parse the JSON
-    const data = JSON.parse(scriptTag.textContent);
-    console.log('📦 Found __NEXT_DATA__, structure keys:', Object.keys(data));
-    
-    // Search recursively for keys matching "lines", "moves", "pgn", "fen", "steps"
-    const foundLines = findKeys(data, ['lines', 'moves', 'pgn', 'fen', 'steps']);
-    
-    if (foundLines.length === 0) {
-      console.log('⚠️ No lines/moves/pgn/fen/steps found in JSON structure');
-      console.log('📊 JSON structure sample:', JSON.stringify(data, null, 2).substring(0, 1000));
-      return null;
-    }
-    
-    console.log('✅ Found moves in JSON:', foundLines);
-    return foundLines;
-    
-  } catch (error) {
-    console.warn('⚠️ Failed to extract from __NEXT_DATA__:', error);
-    return null;
-  }
-}
-
-/**
- * Recursively search for keys in an object
- * Returns array of move strings found
- * ENHANCED: Now handles URL-encoded comma-separated strings
- */
-function findKeys(obj: any, keyNames: string[]): string[] {
-  const results: string[] = [];
-  
-  function search(current: any, path: string = ''): void {
-    if (!current || typeof current !== 'object') {
-      return;
-    }
-    
-    // Check if current object has any of the target keys
-    for (const keyName of keyNames) {
-      if (keyName in current) {
-        const value = current[keyName];
-        console.log(`🔍 Found key "${keyName}" at path: ${path}`, typeof value);
-        
-        // Handle different data types
-        if (Array.isArray(value)) {
-          // If it's an array of strings, add them
-          for (const item of value) {
-            if (typeof item === 'string') {
-              // Check if it's a comma-separated URL param
-              if (item.includes(',')) {
-                console.log('🔧 Decoding comma-separated string:', item);
-                results.push(decodeURIComponent(item).replace(/,/g, ' '));
-              } else {
-                results.push(item);
-              }
-            } else if (typeof item === 'object' && item !== null) {
-              // If array contains objects, search recursively
-              search(item, `${path}.${keyName}[]`);
-            }
-          }
-        } else if (typeof value === 'string') {
-          // Check if it's a comma-separated URL param
-          if (value.includes(',')) {
-            console.log('🔧 Decoding comma-separated string:', value);
-            results.push(decodeURIComponent(value).replace(/,/g, ' '));
-          } else {
-            results.push(value);
-          }
-        } else if (typeof value === 'object' && value !== null) {
-          // If it's an object, search recursively
-          search(value, `${path}.${keyName}`);
-        }
-      }
-    }
-    
-    // Recursively search all properties
-    for (const key in current) {
-      if (current.hasOwnProperty(key)) {
-        search(current[key], path ? `${path}.${key}` : key);
-      }
-    }
-  }
-  
-  search(obj);
-  return results;
-}
-
-/**
  * Wait for the Analyze button to appear (with timeout)
+ * FIXED: Flexible URL matching to handle extra parameters like isBoardFlipped
  */
 async function waitForAnalyzeButton(): Promise<HTMLAnchorElement | null> {
   const startTime = Date.now();
   
   while (Date.now() - startTime < POLL_TIMEOUT_MS) {
     // Look for the "Analyze" button link
+    // Uses flexible matching: link.href.includes('/analyze') && link.href.includes('lines=')
+    // This handles URLs with extra parameters like: /analyze?lines=...&isBoardFlipped=true
     const link = Array.from(document.querySelectorAll('a'))
-      .find(a => a.href && a.href.includes('analyze?lines='));
+      .find(a => a.href && a.href.includes('/analyze') && a.href.includes('lines='));
     
     if (link) {
+      console.log('✅ Found Analyze button');
       return link as HTMLAnchorElement;
     }
     
