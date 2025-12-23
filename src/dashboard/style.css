@@ -341,3 +341,49 @@ button:disabled {
 .danger-button:hover {
   background: #c0392b;
 }
+
+/* Course List */
+.course-list {
+  margin-bottom: 20px;
+}
+
+.course-list-header {
+  font-size: 13px;
+  color: #34495e;
+  font-weight: 600;
+  margin: 0 0 12px 0;
+}
+
+.course-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.course-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  background: white;
+  border: 1px solid #bdc3c7;
+  border-radius: 4px;
+}
+
+.course-name {
+  font-size: 14px;
+  color: #2c3e50;
+  font-weight: 500;
+}
+
+.delete-course-button {
+  background: #e67e22;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.delete-course-button:hover {
+  background: #d35400;
+}

@@ -234,6 +234,35 @@ function App() {
     alert('✅ All data cleared successfully');
   };
 
+  const handleDeleteCourse = async (courseName: string) => {
+    // Confirm with user
+    const lineCount = lines.filter(l => l.opening === courseName).length;
+    const confirmed = window.confirm(
+      `⚠️ Are you sure you want to delete "${courseName}"?\n\nThis will remove ${lineCount} line(s) and cancel any pending enrichment for this course.\n\nThis action cannot be undone.`
+    );
+    
+    if (!confirmed) {
+      return;
+    }
+
+    // Send delete course message
+    const response = await chrome.runtime.sendMessage({ 
+      type: 'DELETE_COURSE', 
+      payload: { courseName } 
+    });
+    
+    if (response.status === 'deleted') {
+      // Reload data to refresh the view
+      await loadData();
+      await loadStatus();
+      
+      // Reset course filter if the deleted course was selected
+      if (selectedCourse === courseName) {
+        setSelectedCourse('all');
+      }
+    }
+  };
+
   return (
     <div className="dashboard">
       {/* Header */}
@@ -310,8 +339,34 @@ function App() {
           {/* Data Management Section */}
           <div className="data-management-section">
             <h4>Data Management</h4>
+            
+            {/* Course List with Delete Buttons */}
+            {courses.length > 0 && (
+              <div className="course-list">
+                <p className="course-list-header">Delete Individual Courses:</p>
+                <div className="course-items">
+                  {courses.map(course => {
+                    const count = lines.filter(l => l.opening === course).length;
+                    return (
+                      <div key={course} className="course-item">
+                        <span className="course-name">{course} ({count} lines)</span>
+                        <button 
+                          onClick={() => handleDeleteCourse(course)} 
+                          className="delete-course-button"
+                          title={`Delete ${course}`}
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            
+            {/* Clear All Button */}
             <p className="danger-zone-note">
-              Clear all stored data including extracted lines and cached statistics.
+              Or clear all stored data including extracted lines and cached statistics:
             </p>
             <button onClick={handleClearData} className="danger-button">
               🗑️ Clear All Data

@@ -54,6 +54,7 @@ export type MessageType =
   | 'UPDATE_SETTINGS'      // Dashboard updates Lichess filter settings
   | 'REFRESH_STATS'        // Command to re-enrich all lines with new settings
   | 'CLEAR_DATA'           // Clear all stored data
+  | 'DELETE_COURSE'        // Delete a specific course/opening
   | 'GET_STATUS';
 
 export interface Message {
@@ -94,6 +95,10 @@ export interface StudyExtractedPayload {
 
 export interface LineEnrichedPayload {
   line: ExtractedLine;
+}
+
+export interface DeleteCoursePayload {
+  courseName: string;
 }
 
 export interface StatusResponse {

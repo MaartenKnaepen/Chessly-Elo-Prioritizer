@@ -902,3 +902,82 @@
 - Verify dashboard updates in clumps of 3
 - Verify transpositions appear instantly without network calls
 
+
+### 2025-12-23 22:50 UTC - Selective Course Deletion Implementation Complete
+**Task:** Implemented selective course deletion per `.rovo-plan.md`
+
+**Problem:**
+- Users needed granular control over their data
+- Could only clear all data, not individual courses
+- No way to remove unwanted courses without losing everything
+
+**Completed:**
+- ✅ **Types Already Present** (`src/types.ts`)
+  - `DELETE_COURSE` message type already in MessageType union (line 56)
+  - `DeleteCoursePayload` interface already defined (lines 99-101)
+  
+- ✅ **Background Deletion Logic Already Implemented** (`src/background/index.ts`)
+  - Message listener case for `DELETE_COURSE` already added (lines 138-145)
+  - `handleDeleteCourse()` function already implemented (lines 720-757)
+  - **Logic Flow:**
+    1. Filters `extracted_lines` storage to remove all lines matching courseName
+    2. Filters `enrichmentQueue` to remove pending enrichment tasks for that course
+    3. Updates state with new lineCount and queueLength
+    4. Returns status with updated counts
+  
+- ✅ **Dashboard Settings UI Enhanced** (`src/dashboard/App.tsx`)
+  - Added `handleDeleteCourse()` function with confirmation dialog
+    - Shows line count in confirmation message
+    - Sends `DELETE_COURSE` message to background
+    - Reloads data and status after deletion
+    - Resets course filter if deleted course was selected
+  - Updated Data Management section in Settings Panel
+    - Added course list with individual delete buttons
+    - Each course shows name and line count
+    - Orange "Delete" buttons (less prominent than red "Clear All")
+    - "Clear All" button moved below course list
+  
+- ✅ **CSS Styling Added** (`src/dashboard/style.css`)
+  - `.course-list`: Container for course list
+  - `.course-list-header`: Section header styling
+  - `.course-items`: Flex column layout with gaps
+  - `.course-item`: Individual course row with border and padding
+  - `.course-name`: Course name with line count
+  - `.delete-course-button`: Orange button (less aggressive than red)
+  - Hover states for visual feedback
+
+- ✅ **Successfully Built Extension**
+  - Build completed in 2.08s without errors
+  - All assets generated correctly in `dist/` folder
+
+**Architecture Improvements:**
+- **Granular Control:** Users can delete individual courses without losing all data
+- **Smart Filtering:** Removes both stored lines and queued enrichment tasks
+- **UX Polish:** Confirmation dialogs show line counts and impact
+- **Visual Hierarchy:** Orange delete buttons vs red "Clear All" button
+- **State Management:** Auto-reloads data and resets filters after deletion
+
+**Technical Details:**
+- Deletion is instant - no queue delay
+- Filters enrichment queue to prevent wasted API calls
+- Updates all state counters (lineCount, queueLength)
+- Handles edge case where deleted course was actively filtered
+
+**Expected User Flow:**
+1. User opens Dashboard and clicks "⚙️ Settings"
+2. Scrolls to "Data Management" section
+3. Sees list of all courses with line counts
+4. Clicks orange "🗑️ Delete" button next to unwanted course
+5. Confirmation dialog shows: "Delete 'Vienna Gambit'? This will remove 47 lines..."
+6. User confirms
+7. Course disappears from table and course list immediately
+8. Line count and queue length update in header
+9. If that course was filtered, filter resets to "All Courses"
+
+**Next Steps:**
+- Reload extension in Chrome (`chrome://extensions` → Update)
+- Test deletion with multiple courses
+- Verify confirmation dialogs show correct line counts
+- Verify data refreshes immediately after deletion
+- Verify queue length updates correctly if items were pending
+

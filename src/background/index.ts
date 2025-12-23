@@ -19,7 +19,8 @@ import type {
   StatusResponse,
   CrawlCompletePayload,
   StudyExtractedPayload,
-  LineEnrichedPayload
+  LineEnrichedPayload,
+  DeleteCoursePayload
 } from '../types';
 
 console.log('🔧 Background service worker initialized');
@@ -131,6 +132,15 @@ chrome.runtime.onMessage.addListener((message: Message, _sender, sendResponse) =
         .then(sendResponse)
         .catch(error => {
           console.error('❌ Error clearing data:', error);
+          sendResponse({ error: error.message });
+        });
+      return true;
+
+    case 'DELETE_COURSE':
+      handleDeleteCourse(message.payload)
+        .then(sendResponse)
+        .catch(error => {
+          console.error('❌ Error deleting course:', error);
           sendResponse({ error: error.message });
         });
       return true;
@@ -706,6 +716,45 @@ async function handleClearData(): Promise<{ status: string }> {
   
   console.log('✅ All data cleared successfully');
   return { status: 'cleared' };
+}
+
+/**
+ * Handle DELETE_COURSE message - delete a specific course/opening
+ */
+async function handleDeleteCourse(payload: DeleteCoursePayload): Promise<{ status: string, lineCount: number, queueLength: number }> {
+  const { courseName } = payload;
+  console.log(`🗑️ Deleting course: ${courseName}`);
+  
+  // Step 1: Filter extracted lines - remove all lines for this course
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LINES);
+  const lines: ExtractedLine[] = result[STORAGE_KEYS.LINES] || [];
+  
+  const filteredLines = lines.filter(line => line.opening !== courseName);
+  const deletedCount = lines.length - filteredLines.length;
+  
+  console.log(`📊 Deleting ${deletedCount} lines from storage`);
+  
+  await chrome.storage.local.set({ [STORAGE_KEYS.LINES]: filteredLines });
+  
+  // Step 2: Filter enrichment queue - remove pending items for this course
+  const originalQueueLength = enrichmentQueue.length;
+  enrichmentQueue = enrichmentQueue.filter(item => item.courseName !== courseName);
+  const queueDeletedCount = originalQueueLength - enrichmentQueue.length;
+  
+  console.log(`📊 Removed ${queueDeletedCount} items from enrichment queue`);
+  
+  // Step 3: Update state
+  await updateState({ 
+    lineCount: filteredLines.length,
+    queueLength: enrichmentQueue.length
+  });
+  
+  console.log(`✅ Course "${courseName}" deleted successfully`);
+  return { 
+    status: 'deleted',
+    lineCount: filteredLines.length,
+    queueLength: enrichmentQueue.length
+  };
 }
 
 // Worker Tab logic removed - content script now handles extraction via API directly
