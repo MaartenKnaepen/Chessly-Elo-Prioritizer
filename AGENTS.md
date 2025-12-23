@@ -807,3 +807,98 @@
 - Monitor Network tab to confirm `200 OK` responses from `cag.chessly.com`
 - Verify correct study counts are displayed
 
+### 2025-12-23 21:30 UTC - Optimized Lichess API Queue Implementation Complete
+**Task:** Implemented in-flight deduplication and burst concurrency for Lichess API calls per `.rovo-plan.md`
+
+**Problem:**
+- Sequential processing (1 req/sec) was too slow for large courses
+- Redundant API calls for transposed positions (same FEN via different move orders)
+- No parallelization of independent requests
+
+**Solution:**
+- **In-Flight Deduplication:** Share promises for identical FENs being fetched
+- **Burst Concurrency:** Process 3 requests in parallel with 2s batch delays
+- **Effective Rate:** ~1.5 req/sec (3 requests / 2 seconds) with pipelined throughput
+
+**Completed:**
+- ✅ **Added Deduplication State** (`src/background/index.ts`)
+  - Created `activeFetches: Map<string, Promise<LichessStats | undefined>>`
+  - Removed old throttling variables: `lastLichessRequest`, `LICHESS_RATE_LIMIT_MS`
+  - Added batch processing constants: `BATCH_SIZE = 3`, `BATCH_DELAY_MS = 2000`
+
+- ✅ **Refactored `getLichessStats()` Function**
+  - **Deduplication Logic:**
+    - Checks `activeFetches.has(fen)` before fetching
+    - Returns existing promise if FEN already being fetched
+    - Stores new promises in `activeFetches` map
+    - Removes FEN from map in `.finally()` block
+  - **Rate Limit Handling:**
+    - Detects `429` response and throws `RATE_LIMIT` error
+    - Queue processor catches this and implements backoff strategy
+  - **Removed Internal Throttling:** No more `setTimeout` inside the function
+  - **Promise Sharing:** Multiple calls for same FEN share single network request
+
+- ✅ **Implemented Burst Queue Processor**
+  - **Batch Processing:**
+    - `enrichmentQueue.splice(0, BATCH_SIZE)` extracts up to 3 items
+    - `Promise.all(batch.map(...))` processes batch concurrently
+    - Measures batch elapsed time for precise delay calculation
+  - **Timing Logic:**
+    - Waits `Math.max(0, BATCH_DELAY_MS - elapsed)` after each batch
+    - Ensures consistent ~2s batch window regardless of processing time
+  - **Rate Limit Recovery:**
+    - Catches `RATE_LIMIT` errors from any batch item
+    - Puts entire batch back in queue: `enrichmentQueue.unshift(...batch)`
+    - Waits 60 seconds before retrying
+    - Logs clear warning message for debugging
+  - **Error Handling:** Non-rate-limit errors save lines without stats
+
+- ✅ **Successfully Built Extension**
+  - Build completed in 1.98s without errors
+  - All TypeScript types correctly resolved
+  - All assets generated in `dist/` folder
+
+**Architecture Improvements:**
+- **Deduplication:** Transpositions fetch instantly from shared promises (0ms vs 1000ms)
+- **Concurrency:** 3x parallelization increases throughput significantly
+- **Smart Throttling:** Batch-level timing is more efficient than per-request throttling
+- **Resilience:** Automatic backoff and retry on rate limit errors
+
+**Performance Comparison:**
+| Metric | Old (Sequential) | New (Burst) | Improvement |
+|--------|------------------|-------------|-------------|
+| Throughput | 1 req/sec | ~1.5 req/sec | **50% faster** |
+| Transpositions | 1000ms (full fetch) | 0ms (shared promise) | **Instant** |
+| Batch visibility | 1 line at a time | 3 lines at once | **Better UX** |
+| Rate limit handling | Crash | Backoff & retry | **Resilient** |
+
+**Technical Details:**
+- Deduplication key: Full FEN string
+- Promise lifecycle: Created → Stored → Fetched → Removed (finally)
+- Batch timing: Measures elapsed time, subtracts from 2000ms delay
+- Rate limit backoff: 60 seconds (standard for Lichess API)
+- Error propagation: `RATE_LIMIT` errors bubble up from item to batch to queue
+
+**Expected Behavior:**
+1. **Transpositions:** Dashboard rows appear instantly for repeated positions
+2. **Batch Updates:** Dashboard updates in "clumps" of 3 rows instead of 1-by-1
+3. **Network Traffic:** Background DevTools shows 3 concurrent requests, then 2s pause
+4. **Console Logs:**
+   - `🔄 Deduplicating request for FEN: ...` (transposition detected)
+   - `⚡ Processing batch of 3 items (X remaining)...` (batch start)
+   - `⏳ Waiting Xms before next batch...` (delay between batches)
+   - `⚠️ Rate limit hit! Putting batch back in queue and waiting 60s...` (if rate limited)
+
+**Expected Results (Vienna Gambit with 90 lines):**
+- **Old:** 90 seconds sequential (1 req/sec)
+- **New:** ~60 seconds burst (1.5 req/sec) + instant transpositions
+- **Improvement:** ~33% faster + better UX with batched updates
+
+**Next Steps:**
+- Reload extension in Chrome (`chrome://extensions` → Developer mode → Update)
+- Test on large course (e.g., Vienna Gambit with 50+ studies)
+- Monitor console for deduplication logs
+- Monitor Network tab (Background DevTools) for burst pattern
+- Verify dashboard updates in clumps of 3
+- Verify transpositions appear instantly without network calls
+

@@ -41,8 +41,10 @@ const DEFAULT_LICHESS_SETTINGS: LichessSettings = {
 
 // Lichess API Configuration
 const LICHESS_API_BASE = 'https://explorer.lichess.ovh';
-const LICHESS_RATE_LIMIT_MS = 1000; // 1 request per second
-let lastLichessRequest = 0;
+
+// Batch processing configuration
+const BATCH_SIZE = 3; // Process 3 requests concurrently
+const BATCH_DELAY_MS = 2000; // 2 seconds between batches (~1.5 req/sec effective rate)
 
 // Enrichment Queue State
 interface QueueItem {
@@ -53,6 +55,10 @@ interface QueueItem {
 
 let enrichmentQueue: QueueItem[] = [];
 let isProcessingQueue = false;
+
+// In-flight request deduplication
+// Maps FEN -> Promise for requests currently being fetched
+const activeFetches = new Map<string, Promise<LichessStats | undefined>>();
 
 /**
  * Initialize state on installation
@@ -321,7 +327,7 @@ async function handleCrawlError(payload: any): Promise<{ status: string }> {
 
 /**
  * Queue processor - runs continuously while queue has items
- * Processes one item per second to respect Lichess rate limits
+ * Processes items in batches of 3 concurrently with 2s delays between batches
  */
 async function processQueue(): Promise<void> {
   if (isProcessingQueue) {
@@ -330,58 +336,104 @@ async function processQueue(): Promise<void> {
   }
 
   isProcessingQueue = true;
-  console.log('🔄 Starting queue processor...');
+  console.log('🔄 Starting burst queue processor...');
 
   while (enrichmentQueue.length > 0) {
-    const item = enrichmentQueue.shift();
-    if (!item) break;
+    // Extract batch of items to process
+    const batch = enrichmentQueue.splice(0, BATCH_SIZE);
+    
+    if (batch.length === 0) break;
+
+    console.log(`⚡ Processing batch of ${batch.length} items (${enrichmentQueue.length} remaining)...`);
+
+    // Measure batch processing time
+    const batchStartTime = Date.now();
 
     try {
-      // Get Lichess stats (with throttling)
-      const stats = await getLichessStats(item.fen);
+      // Process batch items concurrently
+      await Promise.all(batch.map(async (item) => {
+        try {
+          // Get Lichess stats (with deduplication)
+          const stats = await getLichessStats(item.fen);
 
-      // Cache the result
-      await cacheLichessStats(item.fen, stats);
+          // Cache the result
+          await cacheLichessStats(item.fen, stats);
 
-      // Build enriched line
-      const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
-      const enriched: ExtractedLine = {
-        opening: item.courseName,
-        chapter: item.raw.Chapter,
-        study: item.raw.Study,
-        variation: item.raw.Variation,
-        moves,
-        fen: item.fen,
-        stats
-      };
+          // Build enriched line
+          const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
+          const enriched: ExtractedLine = {
+            opening: item.courseName,
+            chapter: item.raw.Chapter,
+            study: item.raw.Study,
+            variation: item.raw.Variation,
+            moves,
+            fen: item.fen,
+            stats
+          };
 
-      // Save and broadcast
-      await saveEnrichedLine(enriched);
-      broadcastLineEnriched(enriched);
+          // Save and broadcast
+          await saveEnrichedLine(enriched);
+          broadcastLineEnriched(enriched);
 
-      console.log(`✅ Enriched: ${item.raw.Chapter} - ${item.raw.Study} (Queue: ${enrichmentQueue.length})`);
+          console.log(`✅ Enriched: ${item.raw.Chapter} - ${item.raw.Study}`);
+
+        } catch (error) {
+          // Check if it's a rate limit error
+          if (error instanceof Error && error.message === 'RATE_LIMIT') {
+            // Re-throw to be caught by outer catch
+            throw error;
+          }
+          
+          console.warn(`⚠️ Failed to enrich line:`, error);
+          
+          // Save line without stats
+          const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
+          const enriched: ExtractedLine = {
+            opening: item.courseName,
+            chapter: item.raw.Chapter,
+            study: item.raw.Study,
+            variation: item.raw.Variation,
+            moves,
+            fen: item.fen,
+            stats: undefined
+          };
+
+          await saveEnrichedLine(enriched);
+          broadcastLineEnriched(enriched);
+        }
+      }));
+
+      // Update queue length in state
+      await updateState({ queueLength: enrichmentQueue.length });
+
+      // Calculate remaining time in batch window
+      const batchElapsedTime = Date.now() - batchStartTime;
+      const remainingDelay = Math.max(0, BATCH_DELAY_MS - batchElapsedTime);
+
+      // Wait for the rest of the batch delay if needed
+      if (remainingDelay > 0 && enrichmentQueue.length > 0) {
+        console.log(`⏳ Waiting ${remainingDelay}ms before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, remainingDelay));
+      }
 
     } catch (error) {
-      console.warn(`⚠️ Failed to enrich line:`, error);
+      // Handle rate limit errors
+      if (error instanceof Error && error.message === 'RATE_LIMIT') {
+        console.warn('⚠️ Rate limit hit! Putting batch back in queue and waiting 60s...');
+        
+        // Put batch items back at the front of the queue
+        enrichmentQueue.unshift(...batch);
+        
+        // Wait 60 seconds before retrying
+        await new Promise(resolve => setTimeout(resolve, 60000));
+        
+        // Continue to next iteration
+        continue;
+      }
       
-      // Save line without stats
-      const moves = item.raw['Move Order'].split(' ').filter(m => m.trim().length > 0);
-      const enriched: ExtractedLine = {
-        opening: item.courseName,
-        chapter: item.raw.Chapter,
-        study: item.raw.Study,
-        variation: item.raw.Variation,
-        moves,
-        fen: item.fen,
-        stats: undefined
-      };
-
-      await saveEnrichedLine(enriched);
-      broadcastLineEnriched(enriched);
+      // For other errors, log and continue
+      console.error('❌ Batch processing error:', error);
     }
-
-    // Update queue length in state
-    await updateState({ queueLength: enrichmentQueue.length });
   }
 
   isProcessingQueue = false;
@@ -482,53 +534,76 @@ async function getLichessSettings(): Promise<LichessSettings> {
 }
 
 /**
- * Get Lichess statistics for a position (with throttling)
+ * Get Lichess statistics for a position with in-flight deduplication
  * Uses stored settings for ratings and speeds filters
+ * Multiple calls for the same FEN will share the same promise
  */
 async function getLichessStats(fen: string): Promise<LichessStats | undefined> {
-  // Throttle requests
-  const now = Date.now();
-  const timeSinceLastRequest = now - lastLichessRequest;
-  if (timeSinceLastRequest < LICHESS_RATE_LIMIT_MS) {
-    await new Promise(resolve => setTimeout(resolve, LICHESS_RATE_LIMIT_MS - timeSinceLastRequest));
+  // Check if we're already fetching this FEN
+  const existingFetch = activeFetches.get(fen);
+  if (existingFetch) {
+    console.log(`🔄 Deduplicating request for FEN: ${fen.substring(0, 30)}...`);
+    return existingFetch;
   }
-  lastLichessRequest = Date.now();
 
-  try {
-    // Get current settings
-    const settings = await getLichessSettings();
-    
-    // Build query string dynamically from settings
-    const ratingsParam = settings.ratings.join(',');
-    const speedsParam = settings.speeds.join(',');
-    const url = `${LICHESS_API_BASE}/lichess?fen=${encodeURIComponent(fen)}&ratings=${ratingsParam}&speeds=${speedsParam}`;
-    
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.warn(`⚠️ Lichess API error: ${response.status}`);
+  // Create new fetch promise
+  const fetchPromise = (async () => {
+    try {
+      // Get current settings
+      const settings = await getLichessSettings();
+      
+      // Build query string dynamically from settings
+      const ratingsParam = settings.ratings.join(',');
+      const speedsParam = settings.speeds.join(',');
+      const url = `${LICHESS_API_BASE}/lichess?fen=${encodeURIComponent(fen)}&ratings=${ratingsParam}&speeds=${speedsParam}`;
+      
+      const response = await fetch(url);
+      
+      if (response.status === 429) {
+        // Rate limit hit - throw specific error
+        throw new Error('RATE_LIMIT');
+      }
+      
+      if (!response.ok) {
+        console.warn(`⚠️ Lichess API error: ${response.status}`);
+        return undefined;
+      }
+
+      const data = await response.json();
+      
+      // Extract stats
+      const white = data.white || 0;
+      const black = data.black || 0;
+      const draws = data.draws || 0;
+      const total = white + black + draws;
+
+      return {
+        white,
+        black,
+        draws,
+        total
+      };
+
+    } catch (error) {
+      // Re-throw rate limit errors so queue processor can handle them
+      if (error instanceof Error && error.message === 'RATE_LIMIT') {
+        throw error;
+      }
+      
+      console.warn('⚠️ Failed to fetch Lichess stats:', error);
       return undefined;
     }
+  })();
 
-    const data = await response.json();
-    
-    // Extract stats
-    const white = data.white || 0;
-    const black = data.black || 0;
-    const draws = data.draws || 0;
-    const total = white + black + draws;
+  // Store the promise in activeFetches
+  activeFetches.set(fen, fetchPromise);
 
-    return {
-      white,
-      black,
-      draws,
-      total
-    };
+  // Remove from activeFetches when done (success or failure)
+  fetchPromise.finally(() => {
+    activeFetches.delete(fen);
+  });
 
-  } catch (error) {
-    console.warn('⚠️ Failed to fetch Lichess stats:', error);
-    return undefined;
-  }
+  return fetchPromise;
 }
 
 /**
