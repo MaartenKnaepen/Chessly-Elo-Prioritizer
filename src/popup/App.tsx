@@ -125,7 +125,7 @@ const App: React.FC = () => {
   return (
     <div className="container">
       <div className="header">
-        <h1>♟️ Chessly Extractor</h1>
+        <h1>♟️ Chessly ELO Prioritizer</h1>
         <p>Extract and enrich your repertoire</p>
       </div>
 
@@ -176,14 +176,12 @@ const App: React.FC = () => {
           )}
         </button>
 
-        {status.lineCount > 0 && (
-          <button
-            className="button secondary"
-            onClick={handleOpenDashboard}
-          >
-            📊 Open Dashboard
-          </button>
-        )}
+        <button
+          className="button secondary"
+          onClick={handleOpenDashboard}
+        >
+          📊 Open Dashboard
+        </button>
       </div>
 
       <div className="footer">

@@ -267,7 +267,7 @@ function App() {
     <div className="dashboard">
       {/* Header */}
       <div className="dashboard-header">
-        <h1>♟️ Chessly Explorer Dashboard</h1>
+        <h1>♟️ Chessly ELO Prioritizer Dashboard</h1>
         <div className="dashboard-header-actions">
           {status && (
             <>

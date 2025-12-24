@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Chessly Repertoire Extractor",
+  "name": "Chessly ELO Prioritizer",
   "version": "1.0.0",
   "description": "Fast extraction of chess repertoires from Chessly with Lichess statistics",
   "permissions": [
@@ -18,7 +18,7 @@
   },
   "action": {
     "default_popup": "src/popup/index.html",
-    "default_title": "Chessly Extractor"
+    "default_title": "Chessly ELO Prioritizer"
   },
   "content_scripts": [
     {

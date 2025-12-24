@@ -1,7 +1,7 @@
 {
   "name": "chessly-extension",
   "version": "1.0.0",
-  "description": "High-performance Chrome Extension for Chessly repertoire extraction",
+  "description": "High-performance Chrome Extension for Chessly repertoire extraction with ELO-based prioritization",
   "type": "module",
   "scripts": {
     "dev": "vite",
