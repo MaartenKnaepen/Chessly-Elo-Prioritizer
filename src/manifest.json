@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Chessly ELO Prioritizer",
-  "version": "1.0.0",
+  "version": "3.0.1",
   "description": "Fast extraction of chess repertoires from Chessly with Lichess statistics",
   "permissions": [
-    "storage",
-    "scripting"
+    "storage"
   ],
   "host_permissions": [
     "https://chessly.com/*",
